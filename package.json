@@ -1,0 +1,24 @@
+{
+  "name": "work-helper",
+  "version": "1.0.0",
+  "description": "Offline work file organizer, reader and task helper",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "package": "electron-packager . WorkHelper --platform=win32 --arch=x64 --icon=icon.ico --out=dist --overwrite --ignore=\"^/dist\""
+  },
+  "keywords": [],
+  "author": "RawBirth",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "exceljs": "^4.4.0",
+    "mammoth": "^1.13.0",
+    "pdf-parse": "^1.1.1"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0"
+  }
+}

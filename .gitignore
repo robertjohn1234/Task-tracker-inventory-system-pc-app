@@ -1,0 +1,7 @@
+node_modules/
+dist/
+WorkHelper-win32-x64/
+*.exe
+*.whinv
+*.log
+.env

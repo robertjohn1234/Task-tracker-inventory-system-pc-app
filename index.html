@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Work Helper</title>
+  <style>
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html, body { height: 100%; margin: 0; }
+    body { font-family: Segoe UI, Arial, sans-serif; font-size: 13px; color: #222; overflow: hidden; }
+    button { padding: 6px 12px; font-size: 13px; cursor: pointer; }
+    button:disabled { cursor: default; }
+
+    /* welcome screen cover (the look is added by intro.js; if intro.js is missing this cover disappears after 10 seconds) */
+    #intro { position: fixed; inset: 0; z-index: 100; background: #0f1424; animation: introGiveUp 0s 10s forwards; }
+    @keyframes introGiveUp { to { visibility: hidden; pointer-events: none; } }
+
+    /* ---- app shell: sidebar + content ---- */
+    #app { display: flex; height: 100%; }
+    #nav { position: relative; flex: none; width: 74px; background: #1e2430; display: flex; flex-direction: column; padding: 8px 0; gap: 4px; }
+    .navSpacer { flex: 1; }
+    .navbtn, .navact { position: relative; background: none; border: 0; border-left: 3px solid transparent; border-radius: 0; color: #b8c0cc; padding: 10px 4px; display: flex; flex-direction: column; align-items: center; gap: 3px; font-size: 11px; cursor: pointer; }
+    .navbtn .ico, .navact .ico { font-size: 20px; }
+    .navbtn:hover, .navact:hover { background: #2a3140; color: #fff; }
+    .navbtn.on { background: #2a3140; color: #fff; border-left-color: #4c9aff; }
+    .badge { position: absolute; top: 4px; right: 12px; background: #d1242f; color: #fff; border-radius: 9px; font-size: 10px; min-width: 16px; padding: 0 4px; line-height: 16px; text-align: center; }
+    #content { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+    #filesView { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+    #topbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 8px 10px; border-bottom: 1px solid #ccc; background: #f3f3f3; }
+    #search { padding: 6px 8px; flex: 1 1 180px; min-width: 120px; max-width: 360px; font-size: 13px; }
+    #viewToggle { white-space: nowrap; margin: 0 14px; }
+    #viewToggle button.on { background: #1f6feb; color: #fff; border: 1px solid #1f6feb; }
+    #basketTop { font-weight: 600; }
+    #indexStatus { margin-left: auto; color: #0a6; font-size: 12px; }
+
+    #main { flex: 1; display: flex; min-height: 0; min-width: 0; }
+    #left { flex: none; width: var(--leftW, clamp(240px, 34vw, 440px)); min-width: 200px; max-width: 75%; border-right: 1px solid #ccc; overflow: auto; background: #fff; padding: 4px 0; }
+    #right { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+    /* drag handle between the file list and the preview */
+    #splitter { flex: none; width: 8px; cursor: col-resize; touch-action: none;
+      background: linear-gradient(to right, transparent 3px, rgba(128,128,128,0.4) 3px, rgba(128,128,128,0.4) 5px, transparent 5px); }
+    #splitter:hover, #splitter.drag { background: linear-gradient(to right, transparent 2px, #4c9aff 2px, #4c9aff 6px, transparent 6px); }
+    body.resizing { cursor: col-resize; user-select: none; }
+    #filesView.focus #left, #filesView.focus #splitter { display: none; }
+    body.resizing iframe { pointer-events: none; }
+
+    .row { display: flex; align-items: center; gap: 6px; padding: 3px 8px; cursor: pointer; white-space: nowrap; }
+    .row:hover { background: #eef4ff; }
+    .row.dropok { background: #d6f5d6 !important; outline: 1px dashed #3a3; }
+    .sel { background: #cfe3ff !important; }
+    .arrow { width: 12px; flex: none; color: #666; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; display: inline-block; }
+    .label { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .row.rootRow { margin-top: 8px; font-weight: 700; border-left: 3px solid var(--accent, #1f6feb); background: rgba(127,127,127,0.12); }
+    .row.rootRow .sub { font-weight: 400; font-size: 11px; color: #888; }
+    .count { margin-left: auto; color: #888; font-size: 11px; flex: none; }
+    .rm { visibility: hidden; color: #1f6feb; padding: 0 4px; font-weight: 700; flex: none; }
+    .rm:last-child { color: #b00; }
+    .row:hover .rm { visibility: visible; }
+    .empty { color: #888; padding: 8px 12px; font-size: 12px; }
+
+    .hit { padding: 6px 10px; border-bottom: 1px solid #eee; cursor: pointer; }
+    .hit:hover { background: #eef4ff; }
+    .hitname { display: flex; align-items: center; gap: 6px; font-weight: 600; min-width: 0; }
+    .hit .p { color: #888; font-size: 11px; margin-left: 15px; overflow-wrap: anywhere; }
+    .hit .s { color: #666; font-size: 11px; margin-left: 15px; overflow-wrap: anywhere; }
+
+    #emptyMsg { margin: auto; color: #888; padding: 20px; text-align: center; }
+    #fileView { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
+    #fileHead { padding: 10px 14px 4px; }
+    #fileName { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+    #filePath { color: #888; font-size: 11px; overflow-wrap: anywhere; }
+    #fileActions { display: flex; align-items: center; gap: 8px; padding: 6px 14px 10px; border-bottom: 1px solid #ddd; flex-wrap: wrap; }
+    #catSel { padding: 5px; font-size: 13px; max-width: 100%; }
+    #preview { flex: 1; min-height: 120px; overflow: auto; background: #e9e9e9; }
+    #preview iframe { width: 100%; height: 100%; border: 0; }
+    #preview img { max-width: 100%; display: block; margin: 0 auto; }
+    #preview pre { white-space: pre-wrap; margin: 0; padding: 12px; font-family: Consolas, monospace; font-size: 12px; background: #fff; min-height: 100%; overflow-wrap: anywhere; }
+    #preview .note { padding: 6px 12px; font-size: 12px; color: #666; background: #f7f7f7; border-bottom: 1px solid #ddd; }
+    #preview .nopreview { padding: 30px; color: #666; }
+
+    #sumBox { border-top: 1px solid #bbb; padding: 8px 14px; background: #fafafa; max-height: 40%; overflow: auto; }
+    #sumHead { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    #sumTitle { font-weight: 600; overflow-wrap: anywhere; }
+    #sumStatus { color: #0a6; font-size: 12px; margin: 4px 0; }
+    #sumText { white-space: pre-wrap; font-size: 13px; overflow-wrap: anywhere; }
+
+    /* organize dialog */
+    #modal { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 10; padding: 8px; }
+    #modalBox { background: #fff; width: min(1050px, 100%); max-height: 100%; display: flex; flex-direction: column; border-radius: 8px; padding: 14px 18px; overflow: hidden; }
+    #modalBox h3 { margin: 0 0 8px; }
+    .orgRow { display: flex; align-items: center; gap: 12px; margin: 4px 0; flex-wrap: wrap; }
+    #destText { overflow-wrap: anywhere; }
+    #orgSummary { margin: 8px 0 2px; font-weight: 600; }
+    #orgPreview { flex: 1; overflow: auto; border: 1px solid #ddd; margin: 6px 0; min-height: 120px; }
+    #orgPreview table { border-collapse: collapse; width: 100%; }
+    #orgPreview th, #orgPreview td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #eee; font-size: 12px; vertical-align: top; overflow-wrap: anywhere; }
+    #orgPreview th { background: #f3f3f3; position: sticky; top: 0; }
+    #orgPreview tr.skip td { color: #999; }
+    #orgFoot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    #orgMsg { flex: 1 1 200px; font-size: 12px; color: #0a6; overflow-wrap: anywhere; }
+    #orgGo { background: #1f6feb; color: #fff; border: 1px solid #1f6feb; font-weight: 600; }
+    #orgGo:disabled { background: #9db9e8; border-color: #9db9e8; }
+
+    /* right-click menu */
+    #ctxMenu { position: fixed; z-index: 30; background: #fff; border: 1px solid #bbb; border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,0.25); padding: 4px 0; min-width: 220px; }
+    #ctxMenu .item { padding: 6px 14px; cursor: pointer; white-space: nowrap; }
+    #ctxMenu .item:hover { background: #eef4ff; }
+    #ctxMenu .item.off { color: #aaa; cursor: default; }
+    #ctxMenu .item.off:hover { background: none; }
+    #ctxMenu .sep { height: 1px; background: #e3e3e3; margin: 4px 0; }
+
+    /* name prompt */
+    #askModal { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; z-index: 20; }
+    #askBox { background: #fff; border-radius: 8px; padding: 16px 18px; width: min(420px, 94vw); }
+    #askBox h3 { margin: 0 0 10px; font-size: 14px; overflow-wrap: anywhere; }
+    #askInput { width: 100%; padding: 7px 8px; font-size: 13px; }
+    #askBtns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+
+    #toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: #222; color: #fff; padding: 9px 16px; border-radius: 6px; font-size: 13px; z-index: 40; max-width: 90vw; overflow-wrap: anywhere; }
+
+    /* narrow window */
+    @media (max-width: 820px) {
+      #app { flex-direction: column; }
+      #nav { flex-direction: row; width: auto; padding: 0 6px; }
+      .navbtn, .navact { flex-direction: row; gap: 6px; padding: 6px 12px; border-left: 0; border-bottom: 3px solid transparent; }
+      .navbtn.on { border-bottom-color: #4c9aff; }
+      .badge { position: static; }
+      #main { flex-direction: column; }
+      #left { width: auto; min-width: 0; max-width: none; height: 40%; border-right: 0; border-bottom: 1px solid #ccc; }
+      #splitter { display: none; }
+    }
+  </style>
+  <script src="theme.js"></script>
+</head>
+<body>
+  <div id="intro"></div>
+
+  <div id="app">
+    <nav id="nav">
+      <button class="navbtn on" data-tab="tasks"><span class="ico">✅</span><span>Tasks</span><span id="taskBadge" class="badge" hidden></span></button>
+      <button class="navbtn" data-tab="files"><span class="ico">📁</span><span>Files</span></button>
+      <button class="navbtn" data-tab="inventory"><span class="ico">📦</span><span>Inventory</span></button>
+      <button class="navbtn" data-tab="notes"><span class="ico">📝</span><span>Notes</span></button>
+      <button class="navbtn" data-tab="punch"><span class="ico">🚩</span><span>Punch list</span></button>
+      <span class="navSpacer"></span>
+      <button class="navact" id="aiBtn" title="Turn the AI on or off"><span class="ico">✨</span><span>AI: on</span></button>
+      <button class="navact" id="styleBtn" title="Themes and welcome screen"><span class="ico">🎨</span><span>Style</span></button>
+    </nav>
+
+    <div id="content">
+      <div id="filesView" hidden>
+        <div id="topbar">
+          <button id="addFolder">+ Add Folder</button>
+          <button id="refresh">Refresh</button>
+          <input id="search" placeholder="Search names and contents...">
+          <span id="viewToggle">
+            <button data-v="folders" class="on">Folders</button><button data-v="categories">Categories</button>
+          </span>
+          <button id="editCats">Edit categories</button>
+          <button id="basketTop">Basket (0)</button>
+          <button id="undoMove" disabled>↶ Undo move</button>
+          <span id="indexStatus"></span>
+        </div>
+
+        <div id="main">
+          <div id="left"><div id="tree"></div></div>
+          <div id="splitter" title="Drag to resize. Double-click to reset."></div>
+
+          <div id="right">
+            <div id="emptyMsg">Select a file on the left to preview it.</div>
+
+            <div id="fileView" hidden>
+              <div id="fileHead">
+                <div id="fileName"></div>
+                <div id="filePath"></div>
+              </div>
+              <div id="fileActions">
+                <button id="openBtn">Open</button>
+                <button id="showBtn">Show in folder</button>
+                <button id="sumBtn">Summarize</button>
+                <button id="moveBtn">Move to…</button>
+                <button id="basketBtn">+ Add to basket</button>
+                <button id="taskBtn">＋ Task</button>
+                <button id="focusBtn" title="Hide the file list to give the preview the whole window (Esc to go back)">⛶ Wide view</button>
+                <label>Category: <select id="catSel"></select></label>
+              </div>
+              <div id="preview"></div>
+              <div id="sumBox" hidden>
+                <div id="sumHead">
+                  <span id="sumTitle"></span>
+                  <button id="sumClose">Close</button>
+                </div>
+                <div id="sumStatus"></div>
+                <div id="sumText"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="tasksView"></div>
+      <div id="inventoryView" hidden></div>
+      <div id="notesView" hidden></div>
+      <div id="punchView" hidden></div>
+    </div>
+  </div>
+
+  <div id="modal" hidden>
+    <div id="modalBox">
+      <h3>Organize files from the basket</h3>
+      <div class="orgRow">
+        <span>Destination:</span> <b id="destText">(not chosen yet)</b>
+        <button id="destBtn">Choose...</button>
+      </div>
+      <div class="orgRow">
+        <span>Mode:</span>
+        <label><input type="radio" name="orgMode" value="copy" checked> Copy (originals stay where they are)</label>
+        <label><input type="radio" name="orgMode" value="move"> Move (originals go to the Recycle Bin)</label>
+      </div>
+      <div class="orgRow">
+        <span>Folders:</span>
+        <select id="structSel">
+          <option value="category">Category</option>
+          <option value="project-category">Project / Category</option>
+        </select>
+      </div>
+      <div id="orgSummary"></div>
+      <div id="orgPreview"></div>
+      <div id="orgFoot">
+        <span id="orgMsg"></span>
+        <button id="undoBtn">Undo last batch</button>
+        <button id="clearBasket">Empty basket</button>
+        <button id="orgCancel">Close</button>
+        <button id="orgGo">Copy</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="askModal" hidden>
+    <div id="askBox">
+      <h3 id="askTitle"></h3>
+      <input id="askInput" type="text">
+      <div id="askBtns">
+        <button id="askCancel">Cancel</button>
+        <button id="askOk">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="ctxMenu" hidden></div>
+  <div id="toast" hidden></div>
+
+  <script>
+    // Drag the bar between the file list and the preview to change the list width.
+    (function () {
+      var KEY = 'wh-leftw';
+      var main = document.getElementById('main');
+      var split = document.getElementById('splitter');
+      var root = document.documentElement;
+      function setW(px) { root.style.setProperty('--leftW', Math.round(px) + 'px'); }
+      try { var saved = parseInt(localStorage.getItem(KEY), 10); if (saved >= 200) setW(saved); } catch (e) {}
+
+      var dragging = false;
+      split.addEventListener('pointerdown', function (e) {
+        dragging = true;
+        split.classList.add('drag');
+        document.body.classList.add('resizing');
+        try { split.setPointerCapture(e.pointerId); } catch (err) {}
+        e.preventDefault();
+      });
+      split.addEventListener('pointermove', function (e) {
+        if (!dragging) return;
+        setW(e.clientX - main.getBoundingClientRect().left);
+      });
+      function stop() {
+        if (!dragging) return;
+        dragging = false;
+        split.classList.remove('drag');
+        document.body.classList.remove('resizing');
+        try {
+          var w = parseInt(getComputedStyle(document.getElementById('left')).width, 10);
+          if (w >= 200) localStorage.setItem(KEY, String(w));
+        } catch (e) {}
+      }
+      split.addEventListener('pointerup', stop);
+      split.addEventListener('pointercancel', stop);
+      // Wide view: hide the file list so the preview uses the whole window.
+      var fv = document.getElementById('filesView');
+      var fb = document.getElementById('focusBtn');
+      function setFocus(on) {
+        fv.classList.toggle('focus', on);
+        fb.textContent = on ? '⛶ Show file list' : '⛶ Wide view';
+      }
+      fb.addEventListener('click', function () { setFocus(!fv.classList.contains('focus')); });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && fv.classList.contains('focus')) setFocus(false);
+      });
+      split.addEventListener('dblclick', function () {
+        root.style.removeProperty('--leftW');
+        try { localStorage.removeItem(KEY); } catch (e) {}
+      });
+    })();
+  </script>
+  <script src="renderer.js"></script>
+  <script src="organize-ui.js"></script>
+  <script src="fileops-ui.js"></script>
+  <script src="preview-ui.js"></script>
+  <script src="tasks-ui.js"></script>
+  <script src="inventory-ui.js"></script>
+  <script src="ui-kit.js"></script>
+  <script src="notepad-ui.js"></script>
+  <script src="punch-ui.js"></script>
+  <script src="tabs-ui.js"></script>
+  <script src="ai-ui.js"></script>
+  <script src="intro.js"></script>
+</body>
+</html>
