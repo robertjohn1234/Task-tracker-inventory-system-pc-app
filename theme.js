@@ -12,8 +12,8 @@
     customBase: 'dark',
     accent: '#4c9aff',
     showIntro: true,
-    welcomeName: 'RawBirth',
-    welcomeMsg: 'Are you ready to enter sa Mundo ng mga Halimaw?',
+    welcomeName: 'Master',
+    welcomeMsg: 'Work Helper at your Service!',
     goodbyeMsg: 'Sige, see you next time, Master.',
     goodbyeSecs: 4
   };
