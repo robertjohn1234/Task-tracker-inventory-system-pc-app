@@ -201,12 +201,14 @@ function registerInventory(ipcMain, ctx) {
     catch (err) { return { ok: false, error: 'That file could not be opened (is it open in Excel, or damaged?): ' + err.message }; }
 
     let parsed;
+    const stock = findSheet(wb, 'stock'), moves = findSheet(wb, 'movements'), loansWs = findSheet(wb, 'borrowed tools');
     const dash = findSheet(wb, 'stock dashboard'), io = findSheet(wb, 'stock in_out_order');
     const tools = findSheet(wb, 'tools'), borrower = findSheet(wb, 'borrower');
     try {
-      if (dash) parsed = imp.parseConsumables(sheetRows(dash), io ? sheetRows(io) : []);
+      if (stock) parsed = imp.parseExport(sheetRows(stock), moves ? sheetRows(moves) : [], loansWs ? sheetRows(loansWs) : []);
+      else if (dash) parsed = imp.parseConsumables(sheetRows(dash), io ? sheetRows(io) : []);
       else if (tools) parsed = imp.parseTools(sheetRows(tools), borrower ? sheetRows(borrower) : []);
-      else return { ok: false, error: 'I could not recognise this workbook. I look for the sheets "Stock Dashboard" and "Stock IN_OUT_Order" (consumables) or "Tools" (tools list).' };
+      else return { ok: false, error: 'I could not recognise this workbook. Please choose a file made with More > Export to Excel in this app. It needs a sheet named "Stock" (and, to bring back the history, "Movements" and "Borrowed tools").' };
     } catch (err) {
       return { ok: false, error: err.message };
     }
@@ -215,6 +217,11 @@ function registerInventory(ipcMain, ctx) {
     const d = load();
     const src = 'import:' + parsed.kind;
     const hasPrior = d.items.some(i => !i.deleted && i.src === src);
+    if (parsed.kind === 'export') {
+      const live = new Set(d.items.filter(i => !i.deleted && i.src !== src).map(i => i.code));
+      const dup = parsed.items.filter(i => i.code && live.has(i.code)).length;
+      if (dup) parsed.issues.unshift({ level: 'note', text: `${dup} item code${dup === 1 ? ' is' : 's are'} already used by items in this app. Those items will be added again with new codes. If this file came from this same app, you probably do not need to import it.` });
+    }
     return {
       ok: true,
       fileName: path.basename(file0),

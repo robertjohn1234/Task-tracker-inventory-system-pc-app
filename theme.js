@@ -12,8 +12,9 @@
     customBase: 'dark',
     accent: '#4c9aff',
     showIntro: true,
-    welcomeName: 'Master',
-    welcomeMsg: 'Work Helper at your Service!',
+    welcomeName: '',
+    welcomeIcon: '😊',
+    welcomeMsg: 'Welcome to Work Helper. Ready to get things done?',
     goodbyeMsg: 'Sige, see you next time, Master.',
     goodbyeSecs: 4
   };
@@ -74,9 +75,10 @@
     o.customBase = o.customBase === 'light' ? 'light' : 'dark';
     o.showIntro = o.showIntro !== false;
     if (!/^#[0-9a-f]{6}$/i.test(o.accent)) o.accent = DEFAULTS.accent;
-    for (const k of ['welcomeName', 'welcomeMsg', 'goodbyeMsg', 'bgImage']) {
+    for (const k of ['welcomeName', 'welcomeIcon', 'welcomeMsg', 'goodbyeMsg', 'bgImage']) {
       if (typeof o[k] !== 'string') o[k] = DEFAULTS[k];
     }
+    if (!o.welcomeIcon.trim() || o.welcomeIcon.length > 12) o.welcomeIcon = DEFAULTS.welcomeIcon;
     return o;
   }
 
@@ -291,6 +293,9 @@
   });
   const GROUP_ORDER = ['Normal', 'Gamer', 'Anime', 'Your own'];
 
+  // Icons you can pick for the welcome screen.
+  const WELCOME_ICONS = ['😊', '😀', '😎', '🤓', '🥳', '🤩', '😇', '😺', '🐶', '🦊', '🐼', '🐯', '🦁', '🐸', '🐧', '🦉', '🤖', '👾', '👽', '🚀', '⭐', '🔥', '💪', '🛠️', '⚙️', '🏗️', '👹', '🐲'];
+
   function buildUi() {
     const q = (id) => document.getElementById(id);
 
@@ -315,6 +320,9 @@
       .uiFoot .sp { flex: 1; }
       .uiMsg { font-size: 12px; color: #0a8a50; min-height: 16px; }
       .uiTip { font-size: 12px; color: var(--muted, #666); }
+      .uiIcons { display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 6px; flex: 1 1 320px; }
+      .uiIcons button { font-size: 24px; line-height: 1; padding: 6px 0; border: 2px solid var(--border, #ddd); border-radius: 8px; background: transparent; cursor: pointer; }
+      .uiIcons button.on { border-color: var(--accent, #1f6feb); box-shadow: 0 0 0 2px var(--accent, #1f6feb) inset; }
     `;
     document.head.appendChild(st);
 
@@ -344,7 +352,8 @@
 
         <h4>Welcome screen</h4>
         <div class="uiRow"><label class="t">Show at startup</label><input type="checkbox" id="uiShow"></div>
-        <div class="uiRow"><label class="t">Your name</label><input type="text" id="uiName" maxlength="40"></div>
+        <div class="uiRow"><label class="t">Icon</label><div class="uiIcons" id="uiIcons"></div></div>
+        <div class="uiRow"><label class="t">Your name (optional)</label><input type="text" id="uiName" maxlength="40" placeholder="Leave empty to show just: Welcome Master"></div>
         <div class="uiRow"><label class="t">Message under your name</label><input type="text" id="uiWelcome" maxlength="140"></div>
         <div class="uiRow"><label class="t">Goodbye message</label><input type="text" id="uiBye" maxlength="140"></div>
         <div class="uiRow"><label class="t">Goodbye stays (seconds)</label><input type="number" id="uiByeSecs" min="1" max="15" style="flex:0 0 90px"></div>
@@ -407,6 +416,17 @@
       q('uiAccent').value = cur.accent;
       q('uiShow').checked = cur.showIntro;
       q('uiName').value = cur.welcomeName;
+      const ib = q('uiIcons');
+      ib.innerHTML = '';
+      WELCOME_ICONS.forEach((ic) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = ic;
+        b.title = 'Use this icon';
+        b.className = cur.welcomeIcon === ic ? 'on' : '';
+        b.addEventListener('click', () => { cur.welcomeIcon = ic; save(); sync(); });
+        ib.appendChild(b);
+      });
       q('uiWelcome').value = cur.welcomeMsg;
       q('uiBye').value = cur.goodbyeMsg;
       q('uiByeSecs').value = cur.goodbyeSecs;

@@ -32,8 +32,9 @@
 
   const DEF = {
     showIntro: true,
-    welcomeName: 'RawBirth',
-    welcomeMsg: 'Are you ready to enter sa Mundo ng mga Halimaw?',
+    welcomeName: '',
+    welcomeIcon: '😊',
+    welcomeMsg: 'Welcome to Work Helper. Ready to get things done?',
     goodbyeMsg: 'Sige, see you next time, Master.',
     goodbyeSecs: 4
   };
@@ -116,8 +117,8 @@
     if (step === 1) {
       const name = (u.welcomeName || '').trim();
       card.append(
-        make('div', 'introIcon', '👹'),
-        make('h1', '', name ? 'Welcome Master ' + name : 'Welcome')
+        make('div', 'introIcon', (u.welcomeIcon || '').trim() || '😊'),
+        make('h1', '', name ? 'Welcome Master ' + name : 'Welcome Master')
       );
       if ((u.welcomeMsg || '').trim()) card.appendChild(make('p', '', u.welcomeMsg));
       card.appendChild(buttons('Yes (Y)', 'No (N)'));
@@ -129,7 +130,7 @@
       });
       card.append(
         make('div', 'introIcon', '⚠️'),
-        make('h1', '', 'Friendly Warning'),
+        make('h1', '', 'Fair Warning'),
         make('div', 'quote', '“' + quote + '”'),
         again,
         make('p', '', 'Proceed?'),

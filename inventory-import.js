@@ -266,6 +266,125 @@ function parseTools(toolRows, borrowerRows) {
 }
 
 // =====================================================================
+// The app's own Excel export (sheets "Stock", "Movements", "Borrowed tools")
+// =====================================================================
+function headerIndex(rows, need) {
+  for (let i = 0; i < Math.min(rows.length, 15); i++) {
+    const r = rows[i] || [];
+    if (need.every(n => findCol(r, n) >= 0)) return i;
+  }
+  return -1;
+}
+
+function parseExport(stockRows, moveRows, loanRows) {
+  const issues = [];
+  const hs = headerIndex(stockRows, ['code', 'item', 'on hand']);
+  if (hs < 0) throw new Error('The "Stock" sheet does not have the columns Code, Item and On hand. Please use a file made by Export to Excel in this app.');
+  const H = stockRows[hs];
+  const col = (n) => findCol(H, n);
+  const c = { code: col('code'), name: col('item'), cat: col('category'), group: col('group'), uom: col('unit'), on: col('on hand'),
+    min: col('min level'), status: col('status'), loc: col('location'), sup: col('supplier') };
+
+  const items = [], byCode = new Map(), byName = new Map();
+  for (let i = hs + 1; i < stockRows.length; i++) {
+    const r = stockRows[i] || [];
+    const code = cellText(r[c.code]), name = cellText(r[c.name]);
+    if (!code && !name) continue;
+    if (!name) { issues.push({ level: 'skip', text: `Stock row ${i + 1}: no item name.` }); continue; }
+    if (code && byCode.has(code.toLowerCase())) { issues.push({ level: 'skip', text: `Stock row ${i + 1}: the code ${code} appears twice, second one skipped.` }); continue; }
+    const cat = c.cat >= 0 ? cellText(r[c.cat]) : '';
+    const it = {
+      key: code || ('name:' + norm(name)), code, name,
+      category: core.CATEGORY_NAMES.includes(cat) ? cat : 'Other',
+      group: c.group >= 0 ? cellText(r[c.group]) : '', uom: c.uom >= 0 ? cellText(r[c.uom]) : '',
+      location: c.loc >= 0 ? cellText(r[c.loc]) : '', supplier: c.sup >= 0 ? cellText(r[c.sup]) : '',
+      minQty: c.min >= 0 ? (num(r[c.min]) || 0) : 0,
+      archived: c.status >= 0 && /^archived$/i.test(cellText(r[c.status])),
+      onHand: num(r[c.on]) || 0, net: 0, openingQty: 0, rowNo: i + 1
+    };
+    if (cat && !core.CATEGORY_NAMES.includes(cat)) issues.push({ level: 'note', text: `${name}: category "${cat}" is not known here, set to Other.` });
+    items.push(it);
+    if (code) byCode.set(code.toLowerCase(), it);
+    if (!byName.has(norm(name))) byName.set(norm(name), it);
+  }
+  if (!items.length) throw new Error('The "Stock" sheet has no items.');
+
+  const movements = [];
+  let from = '', to = '';
+  const hm = headerIndex(moveRows || [], ['date', 'qty']);
+  if (hm >= 0) {
+    const M = moveRows[hm];
+    const m = (n) => findCol(M, n);
+    const k = { date: m('date'), code: m('code'), name: m('item'), dir: m('in / out'), qty: m('qty'), reason: m('reason'),
+      party: m('department / person'), ref: m('reference'), remarks: m('remarks'), by: m('entered by') };
+    for (let i = hm + 1; i < moveRows.length; i++) {
+      const r = moveRows[i] || [];
+      if (r.every(v => cellText(v) === '')) continue;
+      const code = k.code >= 0 ? cellText(r[k.code]) : '';
+      const name = k.name >= 0 ? cellText(r[k.name]) : '';
+      const item = (code && byCode.get(code.toLowerCase())) || byName.get(norm(name));
+      const dirTxt = k.dir >= 0 ? cellText(r[k.dir]).toUpperCase() : '';
+      const dir = dirTxt === 'IN' ? 'in' : dirTxt === 'OUT' ? 'out' : '';
+      const qty = num(r[k.qty]);
+      const date = toISO(r[k.date]);
+      if (!item) { issues.push({ level: 'skip', text: `Movements row ${i + 1}: item ${code || name || '(blank)'} is not on the Stock sheet.` }); continue; }
+      if (!dir || !(qty > 0) || !date) { issues.push({ level: 'skip', text: `Movements row ${i + 1} (${item.name}): needs a date, IN or OUT, and a quantity above zero.` }); continue; }
+      item.net += dir === 'in' ? qty : -qty;
+      if (!from || date < from) from = date;
+      if (!to || date > to) to = date;
+      movements.push({
+        item, itemName: item.name, dir, qty, date,
+        reason: k.reason >= 0 ? cellText(r[k.reason]) : '', party: k.party >= 0 ? cellText(r[k.party]) : '',
+        ref: k.ref >= 0 ? cellText(r[k.ref]) : '', remarks: k.remarks >= 0 ? cellText(r[k.remarks]) : '',
+        by: k.by >= 0 ? cellText(r[k.by]) : '', rowNo: i + 1
+      });
+    }
+  } else {
+    issues.push({ level: 'note', text: 'No "Movements" sheet found. Only the current balances are imported, as opening stock.' });
+  }
+
+  // The Stock sheet is the truth for today's balance. Anything the movements do not explain becomes opening stock.
+  const mismatches = [];
+  let matched = 0;
+  for (const it of items) {
+    const diff = Math.round((it.onHand - it.net) * 1e6) / 1e6;
+    if (diff > 0) { it.openingQty = diff; matched++; }
+    else if (diff === 0) matched++;
+    else mismatches.push({ row: it.rowNo, name: it.name, excel: it.onHand, app: it.net });
+  }
+
+  const loans = [];
+  const hl = headerIndex(loanRows || [], ['item', 'borrower']);
+  if (hl >= 0) {
+    const L = loanRows[hl];
+    const l = (n) => findCol(L, n);
+    const k = { code: l('code'), name: l('item'), qty: l('qty out'), who: l('borrower'), loc: l('location'), ref: l('brf / ref no'),
+      out: l('date taken'), due: l('expected return'), remarks: l('remarks') };
+    for (let i = hl + 1; i < loanRows.length; i++) {
+      const r = loanRows[i] || [];
+      if (r.every(v => cellText(v) === '')) continue;
+      const code = k.code >= 0 ? cellText(r[k.code]) : '';
+      const name = cellText(r[k.name]);
+      const tool = (code && byCode.get(code.toLowerCase())) || byName.get(norm(name));
+      const qty = k.qty >= 0 ? num(r[k.qty]) : 1;
+      if (!tool || !(qty > 0)) { issues.push({ level: 'skip', text: `Borrowed tools row ${i + 1}: item or quantity not recognised.` }); continue; }
+      loans.push({
+        tool, qty, borrower: k.who >= 0 ? cellText(r[k.who]) : '', location: k.loc >= 0 ? cellText(r[k.loc]) : '',
+        ref: k.ref >= 0 ? cellText(r[k.ref]) : '', dateOut: k.out >= 0 ? toISO(r[k.out]) : '', dueDate: k.due >= 0 ? toISO(r[k.due]) : '',
+        remarks: k.remarks >= 0 ? cellText(r[k.remarks]) : '', returned: false, rowNo: i + 1
+      });
+    }
+  }
+
+  return {
+    kind: 'export', category: null, items, movements, loans, issues,
+    reconcile: { checked: items.length, matched, mismatches },
+    dateRange: from ? { from, to } : null,
+    counts: { items: items.length, movements: movements.length, loans: loans.length }
+  };
+}
+
+// =====================================================================
 // Put parsed data into the inventory
 // =====================================================================
 function applyParsed(data, parsed, opts, by) {
@@ -278,7 +397,7 @@ function applyParsed(data, parsed, opts, by) {
   if (!openingDate) openingDate = parsed.dateRange ? core.addDays(parsed.dateRange.from, -1) : core.todayISO();
 
   const seen = new Set();   // ids that this import produces
-  const itemId = (it) => 'imp-' + hash(`item|${parsed.kind}|${norm(it.name)}|${it.dupIndex || 0}`);
+  const itemId = (it) => 'imp-' + hash(it.key ? `item|${parsed.kind}|${it.key}` : `item|${parsed.kind}|${norm(it.name)}|${it.dupIndex || 0}`);
 
   const upsert = (list, rec, isNew) => {
     const idx = list.findIndex(x => x.id === rec.id);
@@ -299,10 +418,14 @@ function applyParsed(data, parsed, opts, by) {
     idByItem.set(it, id);
     seen.add(id);
     const existing = data.items.find(x => x.id === id);
-    const code = existing && existing.code ? existing.code : core.nextCode(data, parsed.category);
+    const category = it.category || parsed.category;
+    let code = existing && existing.code ? existing.code : '';
+    if (!code && it.code && !data.items.some(x => x.code === it.code && x.id !== id)) code = it.code;
+    if (!code) code = core.nextCode(data, category);
     const rec = core.cleanItemRecord({
-      id, code, name: it.name, category: parsed.category, group: it.group, uom: it.uom || 'pcs',
-      location: it.location, notes: it.notes, leadTimeDays: it.lead, src, createdAt: now, updatedAt: now
+      id, code, name: it.name, category, group: it.group, uom: it.uom || 'pcs',
+      location: it.location, supplier: it.supplier, minQty: it.minQty, archived: it.archived,
+      notes: it.notes, leadTimeDays: it.lead, src, createdAt: now, updatedAt: now
     });
     const r = upsert(data.items, rec);
     if (r === 'added') res.itemsAdded++; else if (r === 'updated') res.itemsUpdated++;
@@ -322,18 +445,18 @@ function applyParsed(data, parsed, opts, by) {
     const iid = idByItem.get(m.item);
     const rec = core.cleanMoveRecord({
       id: 'imp-' + hash(`mv|${parsed.kind}|${m.rowNo}|${m.dir}|${m.date}|${norm(m.itemName)}|${m.qty}`),
-      itemId: iid, dir: m.dir, qty: m.qty, date: m.date, reason: m.reason, party: m.party, remarks: m.remarks,
-      by, src, createdAt: now, updatedAt: now
+      itemId: iid, dir: m.dir, qty: m.qty, date: m.date, reason: m.reason, party: m.party, ref: m.ref, remarks: m.remarks,
+      by: m.by || by, src, createdAt: now, updatedAt: now
     });
     if (upsert(data.movements, rec) === 'added') res.movementsAdded++;
   }
   if (opts.includeLoans !== false) {
     for (const l of parsed.loans) {
       const iid = idByItem.get(l.tool);
-      const dateOut = opts.openingDate && core.validDate(opts.openingDate) ? opts.openingDate : openingDate;
+      const dateOut = core.validDate(l.dateOut) ? l.dateOut : (opts.openingDate && core.validDate(opts.openingDate) ? opts.openingDate : openingDate);
       const rec = core.cleanLoanRecord({
         id: 'imp-' + hash(`loan|${parsed.kind}|${l.rowNo}|${norm(l.tool.name)}|${norm(l.borrower)}`),
-        itemId: iid, qty: 1, borrower: l.borrower, location: l.location, ref: l.ref, dateOut,
+        itemId: iid, qty: l.qty || 1, borrower: l.borrower, location: l.location, ref: l.ref, dateOut, dueDate: l.dueDate || '',
         remarks: l.remarks, returns: l.returned ? [{ date: l.returnDate && l.returnDate >= dateOut ? l.returnDate : dateOut, qty: 1, remarks: '' }] : [],
         by, src, createdAt: now, updatedAt: now
       });
@@ -346,4 +469,4 @@ function applyParsed(data, parsed, opts, by) {
   return res;
 }
 
-module.exports = { parseConsumables, parseTools, applyParsed, classify, toISO };
+module.exports = { parseConsumables, parseTools, parseExport, applyParsed, classify, toISO };

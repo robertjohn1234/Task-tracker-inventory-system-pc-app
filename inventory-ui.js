@@ -274,7 +274,7 @@
       const box = E('div', 'invEmpty');
       box.append(E('p', '', 'No items yet.'));
       const p = E('p');
-      const a = E('button', 'primary', 'Import from your Excel file…'); a.addEventListener('click', openImport);
+      const a = E('button', 'primary', 'Import from Excel…'); a.addEventListener('click', openImport);
       const b = E('button', '', '＋ New item'); b.addEventListener('click', () => openItem());
       p.append(a, document.createTextNode(' '), b);
       box.appendChild(p);
@@ -1500,7 +1500,7 @@
   async function openImport() {
     const d = dialog('Import from Excel', { wide: true });
     const c = d.content;
-    c.append(E('p', '', 'Choose your consumables workbook ("Stock Dashboard" + "Stock IN_OUT_Order" sheets) or your tools workbook ("Tools" sheet). You will see a preview and a check of your balances before anything is saved.'));
+    c.append(E('p', '', 'Choose an Excel file made with More > Export to Excel in this app (sheets "Stock", "Movements" and "Borrowed tools"). You will see a preview and a check of your balances before anything is saved.'));
     const area = E('div');
     c.append(area);
     let ctrl = null, goBtn = null;
@@ -1517,25 +1517,25 @@
 
     function showAnalysis(a) {
       area.innerHTML = '';
-      area.append(E('div', '', `${a.fileName} — ${a.kind === 'tools' ? 'tools workbook' : 'consumables workbook'}`));
+      area.append(E('div', '', `${a.fileName} — ${a.kind === 'export' ? 'Work Helper export' : a.kind === 'tools' ? 'tools workbook' : 'consumables workbook'}`));
       const parts = [`${a.counts.items} items`];
-      if (a.kind === 'consumables') parts.push(`${a.counts.movements} stock in/out entries` + (a.dateRange ? ` (${fmtDate(a.dateRange.from)} – ${fmtDate(a.dateRange.to)})` : ''));
-      else parts.push(`${a.counts.loans} borrowed-tool records`);
+      if (a.kind !== 'tools') parts.push(`${a.counts.movements} stock in/out entries` + (a.dateRange ? ` (${fmtDate(a.dateRange.from)} – ${fmtDate(a.dateRange.to)})` : ''));
+      if (a.kind !== 'consumables') parts.push(`${a.counts.loans} borrowed-tool records`);
       area.append(E('div', 'invNote', 'Found: ' + parts.join(', ') + '.'));
 
-      if (a.kind === 'consumables') {
+      if (a.kind !== 'tools') {
         if (a.reconcile.checked) {
           const ok = a.reconcile.mismatchCount === 0;
           area.append(E('div', ok ? 'invOk' : 'invWarn', ok
             ? `✔ Balance check: all ${a.reconcile.checked} balances in your Excel match what the app calculates from the entries.`
-            : `Balance check: ${a.reconcile.matched} of ${a.reconcile.checked} match. ${a.reconcile.mismatchCount} differ:`));
+            : `Balance check: ${a.reconcile.matched} of ${a.reconcile.checked} match. ${a.reconcile.mismatchCount} differ (the entries add up to less than the balance, so the balance cannot be reached):`));
           if (!ok) {
             const box = E('div', 'invIssues');
             a.reconcile.mismatches.forEach(m => box.append(E('div', '', `Row ${m.row}: ${m.name} — Excel ${m.excel}, app ${m.app}`)));
             area.append(box);
           }
         }
-        area.append(E('div', 'invNote', 'Rows that only have a typed balance (no opening stock) are imported so that the app ends up with exactly that balance.'));
+        area.append(E('div', 'invNote', a.kind === 'export' ? 'Any balance the entries do not explain is recorded as opening stock, so each item ends with exactly the balance on the Stock sheet.' : 'Rows that only have a typed balance (no opening stock) are imported so that the app ends up with exactly that balance.'));
       }
       if (a.issueCount) {
         area.append(E('div', 'invWarn', `${a.issueCount} thing${a.issueCount === 1 ? '' : 's'} to check (these do not stop the import):`));
@@ -1552,9 +1552,9 @@
         const l = E('label', 'invChk'); l.append(replace, E('span', '', 'Replace what I imported from this kind of file before (recommended when you import a corrected file). Items you added by hand are not touched.'));
         area.append(l);
       }
-      if (a.kind === 'tools' && a.counts.loans) {
+      if (a.kind !== 'consumables' && a.counts.loans) {
         loans = inp('checkbox', ''); loans.checked = true;
-        const l = E('label', 'invChk'); l.append(loans, E('span', '', `Also import the ${a.counts.loans} borrowed-tool records from the "Borrower" sheet`));
+        const l = E('label', 'invChk'); l.append(loans, E('span', '', `Also import the ${a.counts.loans} borrowed-tool records from the file`));
         area.append(l);
       }
       ctrl = { od, replace, loans };
