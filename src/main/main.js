@@ -1,21 +1,21 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { scanTree } = require('./scanner');
-const { extractText, SUPPORTED } = require('./extractor');
-const { registerSummarize } = require('./summarizer');
-const { loadRules, classify, rulesFilePath } = require('./categories');
-const { registerOrganizer } = require('./organizer');
-const { registerFileOps } = require('./fileops');
-const { registerPreviews } = require('./previews');
-const { createPool } = require('./extractPool');
-const tasks = require('./tasks');
+const { scanTree } = require('./files/scanner');
+const { extractText, SUPPORTED } = require('./files/extractor');
+const { registerSummarize } = require('./files/summarizer');
+const { loadRules, classify, rulesFilePath } = require('./files/categories');
+const { registerOrganizer } = require('./files/organizer');
+const { registerFileOps } = require('./files/fileops');
+const { registerPreviews } = require('./files/previews');
+const { createPool } = require('./files/extractPool');
+const tasks = require('./tasks/tasks');
 const { registerTasks } = tasks;
-const { registerAppearance } = require('./appearance');
-const { registerInventory } = require('./inventory');
-const { registerAiSwitch } = require('./aiswitch');
-const { registerNotepad } = require('./notepad');
-const { registerPunch } = require('./punch');
+const { registerAppearance } = require('./appearance/appearance');
+const { registerInventory } = require('./inventory/inventory');
+const { registerAiSwitch } = require('./ai/aiswitch');
+const { registerNotepad } = require('./notes/notepad');
+const { registerPunch } = require('./punch/punch');
 
 const TEXT_EXTS = ['.txt', '.csv', '.md', '.log'];
 const CACHE_CHARS = 100000; // text kept per file for searching
@@ -266,10 +266,10 @@ function createWindow() {
     minWidth: 600,
     minHeight: 450,
     title: 'Work Helper',
-    icon: path.join(__dirname, 'icon.ico'),
+    icon: path.join(__dirname, '../../assets/icon.ico'),
     webPreferences: { preload: path.join(__dirname, 'preload.js') }
   });
-  win.loadFile('index.html');
+  win.loadFile(path.join(__dirname, '../renderer/index.html'));
 }
 
 app.whenReady().then(() => {

@@ -17,6 +17,7 @@ function registerInventory(ipcMain, ctx) {
   const backupDir = () => path.join(dir(), 'backups');
 
   let data = null;
+  let uiScope = 'consumables';   // which screen is open: 'consumables' (everything except tools), 'tools' or 'all'
   let pending = null;       // an Excel file that was read and is waiting for "Import"
   let lastBackupDay = '';
 
@@ -82,11 +83,13 @@ function registerInventory(ipcMain, ctx) {
   }
 
   // ---------- what the screens need ----------
-  function state() {
+  function state(scope) {
+    scope = scope || uiScope;
     const d = load();
     const today = core.todayISO();
     const stats = core.computeStats(d, today);
-    const items = d.items.filter(i => !i.deleted).map(i => Object.assign({}, i, { stat: stats[i.id] }));
+    const inScope = (i) => scope === 'all' || ((i.category === core.TOOLS) === (scope === 'tools'));
+    const items = d.items.filter(i => !i.deleted && inScope(i)).map(i => Object.assign({}, i, { stat: stats[i.id] }));
     const byId = new Map(items.map(i => [i.id, i]));
     const movements = d.movements.filter(m => !m.deleted && byId.has(m.itemId))
       .map(m => Object.assign({}, m, { itemCode: byId.get(m.itemId).code, itemName: byId.get(m.itemId).name, uom: byId.get(m.itemId).uom }));
@@ -95,10 +98,13 @@ function registerInventory(ipcMain, ctx) {
         itemCode: byId.get(l.itemId).code, itemName: byId.get(l.itemId).name, uom: byId.get(l.itemId).uom,
         open: Math.round((l.qty - l.returnedQty) * 1000) / 1000
       }));
+    const repairs = (d.repairs || []).filter(r => !r.deleted && byId.has(r.itemId))
+      .map(r => Object.assign({}, r, { itemCode: byId.get(r.itemId).code, itemName: byId.get(r.itemId).name, uom: byId.get(r.itemId).uom }));
+    const events = core.buildEvents(d).filter(x => byId.has(x.itemId)).map(x => Object.assign(x, { itemCode: byId.get(x.itemId).code, itemName: byId.get(x.itemId).name, uom: byId.get(x.itemId).uom }));
     return {
-      today, items, movements, loans, summary: core.summary(d, stats, today),
+      today, scope, items, movements, loans, repairs, events, summary: core.summary({ items: items }, stats, today),
       settings: { user: d.settings.user || '', defaultUser: who(), formCompany: d.settings.formCompany || '', formDept: d.settings.formDept || '', formIssuerMode: d.settings.formIssuerMode || 'user', formIssuerName: d.settings.formIssuerName || '', formLogo: d.settings.formLogo || '' },
-      categories: core.CATEGORIES, inReasons: core.IN_REASONS, outReasons: core.OUT_REASONS, conditions: core.CONDITIONS,
+      categories: core.CATEGORIES.filter(c => scope === 'all' || ((c.name === core.TOOLS) === (scope === 'tools'))), inReasons: core.IN_REASONS, outReasons: core.OUT_REASONS, conditions: core.CONDITIONS, returnConditions: core.RETURN_CONDITIONS,
       folder: dir()
     };
   }
@@ -115,7 +121,10 @@ function registerInventory(ipcMain, ctx) {
     catch (err) { return { ok: false, error: 'Something went wrong: ' + err.message }; }
   });
 
-  handle('inv-load', () => ({ ok: true, state: state() }));
+  handle('inv-load', (e, scope) => {
+    uiScope = scope === 'tools' ? 'tools' : 'consumables';
+    return { ok: true, state: state() };
+  });
   handle('inv-item-save', (e, input) => mutate(d => core.saveItem(d, input, who())));
   handle('inv-item-delete', (e, id) => mutate(d => core.deleteItem(d, id)));
   handle('inv-move-save', (e, input, opts) => mutate(d => core.addMovement(d, input, who(), { allowNegative: !!(opts && opts.allowNegative) })));
@@ -124,6 +133,12 @@ function registerInventory(ipcMain, ctx) {
   handle('inv-move-delete', (e, id) => mutate(d => core.deleteMovement(d, id)));
   handle('inv-checkout', (e, input) => mutate(d => core.checkout(d, input, who())));
   handle('inv-return', (e, id, input) => mutate(d => core.returnLoan(d, id, input, who())));
+  handle('inv-repair-report', (e, input) => mutate(d => core.reportProblem(d, input, who())));
+  handle('inv-repair-update', (e, id, input) => mutate(d => core.updateRepair(d, id, input, who())));
+  handle('inv-event-undo', (e, ev, dry) => {
+    if (dry) { const r = core.undoEvent(load(), ev, { dryRun: true }); return r; }
+    return mutate(d => core.undoEvent(d, ev));
+  });
   handle('inv-loan-delete', (e, id) => mutate(d => core.deleteLoan(d, id)));
   handle('inv-settings-set', (e, patch) => mutate(d => {
     patch = patch || {};
@@ -327,7 +342,7 @@ function registerInventory(ipcMain, ctx) {
 
   // ---------- Excel: writing ----------
   handle('inv-export-excel', async () => {
-    const st = state();
+    const st = state('all');
     const r = await dialog.showSaveDialog(ctx.getWindow(), {
       title: 'Save the inventory report',
       defaultPath: `Inventory-${core.todayISO()}.xlsx`,
@@ -390,6 +405,15 @@ function registerInventory(ipcMain, ctx) {
     ], openLoans.map(l => ({
       code: l.itemCode, name: l.itemName, qty: l.open, who: l.borrower, loc: l.location, ref: l.ref, out: asDate(l.dateOut), due: asDate(l.dueDate),
       days: core.daysBetween(l.dateOut, st.today), over: l.dueDate && l.dueDate < st.today ? 'YES' : '', remarks: l.remarks
+    })));
+
+    sheet('Repairs', [
+      { h: 'Code', k: 'code', w: 12 }, { h: 'Item', k: 'name', w: 44 }, { h: 'Qty', k: 'qty', w: 8 }, { h: 'Problem', k: 'kind', w: 14 },
+      { h: 'Status', k: 'status', w: 12 }, { h: 'Reported', k: 'date', w: 12, fmt: 'yyyy-mm-dd' }, { h: 'Reported by / borrower', k: 'who', w: 26 },
+      { h: 'Note', k: 'note', w: 36 }, { h: 'Closed', k: 'closed', w: 12, fmt: 'yyyy-mm-dd' }, { h: 'Closing note', k: 'cnote', w: 30 }
+    ], st.repairs.slice().sort((a, b) => b.date.localeCompare(a.date)).map(r => ({
+      code: r.itemCode, name: r.itemName, qty: r.qty, kind: r.kind, status: { open: 'Open', fixed: 'Repaired', scrapped: 'Written off', lost: 'Lost' }[r.status] || r.status,
+      date: asDate(r.date), who: r.borrower || r.by, note: r.note, closed: asDate(r.closedDate), cnote: r.closedNote
     })));
 
     sheet('Reorder', [

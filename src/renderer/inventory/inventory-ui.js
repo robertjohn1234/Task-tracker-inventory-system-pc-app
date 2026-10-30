@@ -1,16 +1,15 @@
-// Builds the Inventory tab. Runs after tasks-ui.js.
-// Uses from other files: toast(), showMenu(), askText() (fileops-ui.js) and window.api.
+// Inventory > "Consumables & others": stock in / out, reorder levels, insights, reports and forms.
+// Also owns the dialogs and helpers that the Tools & Equipment screen (tools-ui.js) shares, see window.InvKit at the bottom.
+// Needs: inventory-mode.js (loads first), toast(), showMenu(), askText() (fileops-ui.js) and window.api.
 (function () {
   'use strict';
 
-  const view = document.getElementById('inventoryView');
-  if (!view) return;
+  const view = document.getElementById('invConsumables');
+  if (!view || !window.InvMode) return;
 
   // ---------- styles (colors come from the theme variables when a dark theme is on) ----------
   const st = document.createElement('style');
   st.textContent = `
-    #inventoryView { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-    #inventoryView[hidden] { display: none; }
     #invTop { background: var(--panel, #fff); border-bottom: 1px solid var(--border, #ddd); padding: 10px 16px 8px; }
     .invRow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
     #invTop h2 { margin: 0; font-size: 18px; }
@@ -90,7 +89,7 @@
 
   let S = null;            // everything the main process sends us
   let tab = 'stock';
-  const F = { text: '', category: '', status: '', sort: 'name', desc: false, mvPeriod: '30', insPeriod: 90, insCat: '', insItem: '', mvDir: '', showReturned: false };
+  const F = { text: '', category: '', status: '', sort: 'name', desc: false, mvPeriod: '30', insPeriod: 90, insCat: '', insItem: '', mvDir: '' };
   const LIMIT = 400;
 
   const STATUS_LABEL = { ok: 'OK', low: 'LOW', out: 'OUT', allout: 'ALL BORROWED', archived: 'Archived' };
@@ -121,10 +120,9 @@
   const btnIn = E('button', '', '⬇ Stock In');
   const btnOut = E('button', '', '⬆ Stock Out');
   const btnBulk = E('button', '', '📋 Bulk entry');
-  const btnLend = E('button', '', '🔧 Lend a tool');
   const btnPrint = E('button', '', '🖨 Print / PDF');
   const btnMore = E('button', '', '⋯ More');
-  bar.append(btnNew, btnIn, btnOut, btnBulk, btnLend, btnPrint, btnMore);
+  bar.append(btnNew, btnIn, btnOut, btnBulk, btnPrint, btnMore);
 
   const kpis = E('div', 'invKpis');
   const tabs = E('div', 'invRow');
@@ -133,12 +131,13 @@
 
   // ---------- loading ----------
   async function load() {
-    const r = await api.invLoad();
+    const r = await api.invLoad(InvMode.get());
     if (!r || !r.ok) { body.textContent = (r && r.error) || 'Could not load the inventory.'; return; }
     S = r.state;
     renderAll();
   }
   function useState(r) { if (r && r.state) { S = r.state; renderAll(); } }
+  const isTools = () => InvMode.get() === 'tools';
 
   // ---------- top bar pieces ----------
   function renderKpis() {
@@ -153,15 +152,13 @@
     mk('Items', s.items, '', () => { tab = 'stock'; F.status = ''; renderAll(); });
     mk('Low stock', s.low, 'warn', () => { tab = 'stock'; F.status = 'low'; renderAll(); });
     mk('Out of stock', s.out, 'bad', () => { tab = 'stock'; F.status = 'out'; renderAll(); });
-    mk('Tools borrowed', s.onLoan, '', () => { tab = 'loans'; renderAll(); });
-    mk('Overdue returns', s.overdue, 'bad', () => { tab = 'loans'; renderAll(); });
-    mk('Calibration due (30 d)', s.calibration, 'warn', () => { tab = 'stock'; F.category = 'Tools & Equipment'; renderAll(); });
   }
+
 
   function renderTabs() {
     tabs.innerHTML = '';
     const seg = E('div', 'invSeg');
-    [['stock', 'Stock'], ['moves', 'Movements'], ['loans', 'Borrowed tools'], ['reorder', 'Reorder'], ['insights', 'Insights']].forEach(([k, label]) => {
+    [['stock', 'Stock'], ['moves', 'Movements'], ['reorder', 'Reorder'], ['insights', 'Insights']].forEach(([k, label]) => {
       const b = E('button', tab === k ? 'on' : '', label);
       b.addEventListener('click', () => { tab = k; renderAll(); });
       seg.appendChild(b);
@@ -193,19 +190,14 @@
     } else if (tab === 'insights') {
       filters.append(
         select([['30', 'Last 30 days'], ['90', 'Last 90 days'], ['180', 'Last 6 months'], ['365', 'Last 12 months']], String(F.insPeriod), v => { F.insPeriod = +v; renderBody(); }),
-        select(S.categories.map(c => [c.name, c.name]), F.insCat, v => { F.insCat = v; F.insItem = ''; renderBody(); }, 'All except tools')
+        select(S.categories.map(c => [c.name, c.name]), F.insCat, v => { F.insCat = v; F.insItem = ''; renderBody(); }, 'All categories')
       );
-    } else if (tab === 'loans') {
-      const l = E('label', 'invChk');
-      const c = document.createElement('input'); c.type = 'checkbox'; c.checked = F.showReturned;
-      c.addEventListener('change', () => { F.showReturned = c.checked; renderBody(); });
-      l.append(c, E('span', '', 'Also show returned tools'));
-      filters.appendChild(l);
     }
   }
 
   function renderAll() {
     if (!S) return;
+    if (isTools()) { if (window.ToolsUI) window.ToolsUI.render(); return; }
     renderKpis(); renderTabs(); renderFilters(); renderBody();
   }
 
@@ -214,7 +206,6 @@
     body.innerHTML = '';
     if (tab === 'stock') renderStock();
     else if (tab === 'moves') renderMoves();
-    else if (tab === 'loans') renderLoans();
     else if (tab === 'insights') renderInsights();
     else renderReorder();
   }
@@ -295,9 +286,8 @@
       nameCell.append(E('div', '', i.name));
       if (i.group) nameCell.append(E('div', 'invSub', i.group));
       tr.appendChild(nameCell);
-      tr.append(td('', i.category === 'Tools & Equipment' ? 'Tools' : i.category));
+      tr.append(td('', i.category));
       const q = td('num', fmtQty(i.stat.onHand) + ' ' + i.uom);
-      if (i.stat.onLoan > 0) q.append(E('div', 'invSub', fmtQty(i.stat.onLoan) + ' borrowed'));
       tr.appendChild(q);
       tr.append(td('num', i.stat.rop ? fmtQty(i.stat.rop) : ''));
       tr.append(td('', statusPill(i.stat.status)));
@@ -320,7 +310,6 @@
       { label: 'Details', run: () => openDetail(i.id) },
       { label: 'Stock in…', run: () => openMove({ itemId: i.id, dir: 'in' }) },
       { label: 'Stock out…', run: () => openMove({ itemId: i.id, dir: 'out' }) },
-      i.category === 'Tools & Equipment' ? { label: 'Lend this tool…', run: () => openCheckout(i.id) } : { label: 'Lend…', run: () => openCheckout(i.id) },
       '-',
       { label: 'Edit item…', run: () => openItem(i) }
     ]);
@@ -359,54 +348,17 @@
   }
 
   async function deleteMove(m) {
-    if (!confirm(`Delete this entry?\n\n${m.dir === 'in' ? 'IN' : 'OUT'} ${fmtQty(m.qty)} ${m.uom} of ${m.itemName} on ${fmtDate(m.date)}`)) return;
+    const extra = m.repairId ? '\n\nThis entry came from a lost / written-off tool, so its entry in the Repairs list is undone too.' : '';
+    if (!confirm(`Delete this entry?\n\n${m.dir === 'in' ? 'IN' : 'OUT'} ${fmtQty(m.qty)} ${m.uom} of ${m.itemName} on ${fmtDate(m.date)}${extra}`)) return;
     const r = await api.invMoveDelete(m.id);
     if (!r.ok) { say(r.error); return; }
     useState(r); say('Entry deleted.');
   }
 
-  function renderLoans() {
-    const words = lc(F.text).split(/\s+/).filter(Boolean);
-    let list = S.loans.filter(l => {
-      if (!F.showReturned && l.open <= 0) return false;
-      if (!words.length) return true;
-      return words.every(w => lc([l.itemCode, l.itemName, l.borrower, l.location, l.ref].join(' ')).includes(w));
-    });
-    list.sort((a, b) => {
-      const ao = a.open > 0 ? 0 : 1, bo = b.open > 0 ? 0 : 1;
-      return ao - bo || a.dateOut.localeCompare(b.dateOut);
-    });
-    const { t, tb } = table([
-      { label: 'Code' }, { label: 'Tool' }, { label: 'Qty', num: true }, { label: 'Borrower' }, { label: 'Location' }, { label: 'BRF / ref' },
-      { label: 'Taken' }, { label: 'Expected back' }, { label: 'Status' }, { label: '' }
-    ]);
-    list.slice(0, LIMIT).forEach(l => {
-      const overdue = l.open > 0 && l.dueDate && l.dueDate < S.today;
-      const tr = E('tr');
-      tr.append(td('code', l.itemCode), td('', l.itemName), td('num', fmtQty(l.open > 0 ? l.open : l.qty) + ' ' + l.uom),
-        td('', l.borrower), td('', l.location), td('', l.ref), td('', fmtDate(l.dateOut)), td('', fmtDate(l.dueDate)));
-      let status;
-      if (l.open <= 0) status = E('span', 'pill', 'Returned ' + fmtDate(l.returns.length ? l.returns[l.returns.length - 1].date : ''));
-      else if (overdue) status = E('span', 'pill over', `Overdue ${daysBetween(l.dueDate, S.today)} d`);
-      else status = E('span', 'pill doing', `Out ${daysBetween(l.dateOut, S.today)} d`);
-      tr.append(td('', status));
-      const act = td('act');
-      act.append(actBtn('🖨', l.formNo ? 'Print form ' + l.formNo : 'Make a tool borrowing form', () => makeForm(null, [l.id])), document.createTextNode(' '));
-      if (l.open > 0) act.append(actBtn('Return', 'Mark as returned', () => openReturn(l)), document.createTextNode(' '));
-      act.append(actBtn('🗑', 'Delete this record', () => deleteLoan(l)));
-      tr.appendChild(act);
-      tb.appendChild(tr);
-    });
-    body.appendChild(t);
-    if (!list.length) body.appendChild(E('div', 'invEmpty', F.showReturned ? 'No loan records.' : 'No tools are out right now.'));
-  }
 
-  async function deleteLoan(l) {
-    if (!confirm(`Delete this loan record?\n\n${l.itemName} - ${l.borrower}`)) return;
-    const r = await api.invLoanDelete(l.id);
-    if (!r.ok) { say(r.error); return; }
-    useState(r); say('Loan record deleted.');
-  }
+
+
+  // a tool found broken in the store (not through a return)
 
   function renderReorder() {
     const list = S.items.filter(i => i.stat.status === 'low' || i.stat.status === 'out')
@@ -557,9 +509,6 @@
       reorderQty: inp('number', item ? item.reorderQty || '' : ''),
       leadTimeDays: inp('number', item ? item.leadTimeDays || '' : ''),
       safetyStock: inp('number', item ? item.safetyStock || '' : ''),
-      serial: inp('text', item ? item.serial : '', { maxLength: 200 }),
-      condition: sel([['', '—']].concat(S.conditions.map(c => [c, c])), item ? item.condition : ''),
-      calibrationDue: inp('date', item ? item.calibrationDue : ''),
       startQty: inp('number', ''),
       startDate: inp('date', S.today),
       notes: document.createElement('textarea'),
@@ -578,10 +527,7 @@
     };
     f.code.addEventListener('input', updHint);
 
-    const toolBox = E('div');
-    toolBox.append(grid(fld('Serial no. / asset tag', f.serial), fld('Condition', f.condition)), fld('Calibration due (instruments)', f.calibrationDue));
-    const toggleTools = () => { toolBox.hidden = f.category.value !== 'Tools & Equipment'; updHint(); };
-    f.category.addEventListener('change', toggleTools);
+    f.category.addEventListener('change', updHint);
 
     const c = d.content;
     c.append(fld('Item name', f.name));
@@ -593,12 +539,11 @@
     c.append(E('div', 'invSub', 'Reordering'));
     c.append(grid(fld('Minimum level', f.minQty, 'Warn when stock falls to this'), fld('Usual order quantity', f.reorderQty)));
     c.append(grid(fld('Supplier lead time (days)', f.leadTimeDays), fld('Safety stock', f.safetyStock)));
-    c.append(toolBox);
     if (!editing) c.append(grid(fld('Starting quantity (what you have now)', f.startQty), fld('As of date', f.startDate)));
     c.append(fld('Notes', f.notes));
     const arch = E('label', 'invChk'); arch.append(f.archived, E('span', '', 'Archived (hide from lists; history is kept)'));
     c.append(arch);
-    toggleTools();
+    updHint();
 
     d.button('Save', 'primary', async () => {
       d.say('');
@@ -607,7 +552,6 @@
         name: f.name.value, category: f.category.value, code: f.code.value, uom: f.uom.value, group: f.group.value,
         location: f.location.value, supplier: f.supplier.value, barcode: f.barcode.value,
         minQty: f.minQty.value, reorderQty: f.reorderQty.value, leadTimeDays: f.leadTimeDays.value, safetyStock: f.safetyStock.value,
-        serial: f.serial.value, condition: f.condition.value, calibrationDue: f.calibrationDue.value,
         startQty: f.startQty.value, startDate: f.startDate.value, notes: f.notes.value, archived: f.archived.checked
       };
       const r = await api.invItemSave(input);
@@ -634,10 +578,10 @@
     const mv = opts.move || null;
     const preset = mv ? S.items.find(i => i.id === mv.itemId) : (opts.itemId ? S.items.find(i => i.id === opts.itemId) : null);
     let dir = mv ? mv.dir : (opts.dir || 'in');
-    const d = dialog(mv ? 'Edit entry' : 'Stock in / out');
+    const d = dialog(mv ? 'Edit entry' : (isTools() ? 'Add / remove units' : 'Stock in / out'));
 
     const dirSeg = E('div', 'invSeg');
-    const bIn = E('button', '', '⬇ Stock IN'); const bOut = E('button', '', '⬆ Stock OUT');
+    const bIn = E('button', '', isTools() ? '⬇ Add units' : '⬇ Stock IN'); const bOut = E('button', '', isTools() ? '⬆ Remove units' : '⬆ Stock OUT');
     bIn.type = bOut.type = 'button';
     dirSeg.append(bIn, bOut);
 
@@ -668,8 +612,9 @@
       dir = x;
       bIn.className = dir === 'in' ? 'on' : ''; bOut.className = dir === 'out' ? 'on' : '';
       fillReasons();
-      mkRow.style.display = (dir === 'out' && !mv) ? '' : 'none';
-      party.placeholder = dir === 'in' ? 'Supplier, or department that returned it' : 'Department that took it (e.g. Piping)';
+      if (typeof showInfo === 'function') showInfo();
+      mkRow.style.display = (dir === 'out' && !mv && !isTools()) ? '' : 'none';
+      party.placeholder = isTools() ? (dir === 'in' ? 'Supplier' : 'Why / who') : (dir === 'in' ? 'Supplier, or department that returned it' : 'Department that took it (e.g. Piping)');
     };
     bIn.addEventListener('click', () => setDir('in'));
     bOut.addEventListener('click', () => setDir('out'));
@@ -678,6 +623,7 @@
     const showInfo = () => {
       const it = resolveItem(item.value);
       info.textContent = it ? `On hand: ${fmtQty(it.stat.onHand)} ${it.uom}${it.stat.onLoan ? ` (${fmtQty(it.stat.onLoan)} borrowed)` : ''}${it.location ? ' · ' + it.location : ''}` : (item.value.trim() ? 'No item found for this text yet.' : '');
+      if (it && dir === 'in' && !mv && it.category === 'Tools & Equipment' && it.stat.onLoan > 0) info.textContent += '  ⚠ To record a RETURNED tool use Borrowed tools > Return, not Stock In.';
     };
     item.addEventListener('input', showInfo);
     item.addEventListener('change', showInfo);
@@ -696,6 +642,8 @@
       d.say('');
       const it = mv ? preset : resolveItem(item.value);
       if (!it) { d.say('Please pick an item from the list (or scan its code).', true); return; }
+      if (dir === 'in' && !mv && it.category === 'Tools & Equipment' && it.stat.onLoan > 0 &&
+          !confirm(`${it.name} has ${fmtQty(it.stat.onLoan)} borrowed.\n\nIf someone is RETURNING a tool, press Cancel and use Borrowed tools > Return. Stock In adds new units and the borrowed count will not go down.\n\nPress OK only if you are adding NEW units (bought or received).`)) return;
       const r = await api.invMoveSave({
         id: mv ? mv.id : undefined, itemId: it.id, dir, qty: qty.value, date: date.value,
         reason: reason.value, party: party.value, ref: ref.value, remarks: remarks.value
@@ -855,7 +803,7 @@
   // Builds the whole Insights page as HTML (used on screen and in the PDF report).
   function insightsHtml(period, cat, pal, itemId) {
     const R = computeInsights(period, cat);
-    const label = cat || 'All except tools';
+    const label = cat || 'All categories';
     const nm = (r) => `<a data-item="${esc(r.it.id)}">${esc(r.it.name)}</a>`;
     let h = '';
     h += `<div class="insKpis">
@@ -1023,7 +971,7 @@
     }
     // insights
     const R = insightsHtml(o.period || 90, o.cat || '', PRINT_PAL, o.item || '');
-    return { title: 'Inventory insights', html: reportDoc('Inventory insights', (o.cat || 'All except tools') + ' · last ' + (o.period || 90) + ' days', R.html, INSIGHTS_CSS(PRINT_PAL)), landscape: false };
+    return { title: 'Inventory insights', html: reportDoc('Inventory insights', (o.cat || 'All categories') + ' · last ' + (o.period || 90) + ' days', R.html, INSIGHTS_CSS(PRINT_PAL)), landscape: false };
   }
 
   function outputReport(rep) {
@@ -1052,7 +1000,6 @@
       { label: 'Stock list (all items)', run: go('stock') },
       { label: 'Stock count sheet (blank "Counted" column)', run: go('count') },
       { label: 'Reorder list', run: go('reorder') },
-      { label: 'Borrowed tools', run: go('loans') },
       '-',
       { label: 'Movements — last 7 days', run: go('moves', { days: 7 }) },
       { label: 'Movements — last 30 days', run: go('moves', { days: 30 }) },
@@ -1374,66 +1321,7 @@
   }
 
   // ----- lend / return tools -----
-  function openCheckout(itemId) {
-    const preset = itemId ? S.items.find(i => i.id === itemId) : null;
-    const d = dialog('Lend a tool');
-    const pool = S.items.filter(i => !i.archived && i.category === 'Tools & Equipment');
-    const item = itemInput('invToolList', pool.length ? pool : S.items.filter(i => !i.archived), preset);
-    const info = E('div', 'invInfo');
-    const qty = inp('number', '1');
-    const who = inp('text', '', { maxLength: 120 }); who.setAttribute('list', 'invBorrowers');
-    datalist('invBorrowers', S.loans.map(l => l.borrower));
-    const loc = inp('text', '', { maxLength: 120 }); loc.setAttribute('list', 'invLocs');
-    datalist('invLocs', S.items.map(i => i.location).concat(S.loans.map(l => l.location)));
-    const ref = inp('text', '', { maxLength: 80 }); ref.placeholder = 'BRF no.';
-    const out = inp('date', S.today); const due = inp('date', '');
-    const remarks = inp('text', '', { maxLength: 500 });
-    const mkForm = document.createElement('input'); mkForm.type = 'checkbox'; mkForm.checked = true;
-    const mkRow = E('label', 'invChk'); mkRow.append(mkForm, E('span', '', 'Also make a tool borrowing form (to print or save as PDF)'));
-    const loanIds = [];
-    const showInfo = () => {
-      const it = resolveItem(item.value);
-      info.textContent = it ? `Available: ${fmtQty(it.stat.available)} of ${fmtQty(it.stat.onHand)} ${it.uom}` : '';
-    };
-    item.addEventListener('input', showInfo); item.addEventListener('change', showInfo);
-    const c = d.content;
-    c.append(fld('Tool', item), info, grid(fld('Quantity', qty), fld('Borrower', who)));
-    c.append(grid(fld('Where it will be used', loc), fld('BRF / reference no.', ref)));
-    c.append(grid(fld('Date taken', out), fld('Expected return (optional)', due)), fld('Remarks', remarks));
-    c.append(mkRow);
-    showInfo();
-    async function saveLoan(another) {
-      const it = resolveItem(item.value);
-      if (!it) { d.say('Please pick the tool from the list (or scan its code).', true); return; }
-      const r = await api.invCheckout({ itemId: it.id, qty: qty.value, borrower: who.value, location: loc.value, ref: ref.value, dateOut: out.value, dueDate: due.value, remarks: remarks.value });
-      if (!r.ok) { d.say(r.error, true); return; }
-      useState(r); loanIds.push(r.loan.id); say(`${it.name} lent to ${r.loan.borrower}.`);
-      if (another) { item.value = ''; qty.value = '1'; remarks.value = ''; showInfo(); item.focus(); d.say('Saved. Add the next tool for the same form:'); return; }
-      d.close();
-      if (mkForm.checked) makeForm(null, loanIds);
-    }
-    d.button('Save', 'primary', () => saveLoan(false));
-    d.button('Save & add another tool', '', () => saveLoan(true));
-    d.button('Cancel', '', d.close);
-    (preset ? who : item).focus();
-  }
 
-  function openReturn(l) {
-    const d = dialog('Return a tool', { small: true });
-    const qty = inp('number', l.open); qty.max = String(l.open);
-    const date = inp('date', S.today);
-    const cond = sel(S.conditions, 'Good');
-    const remarks = inp('text', '', { maxLength: 300 });
-    const c = d.content;
-    c.append(E('p', '', `${l.itemName} — ${fmtQty(l.open)} ${l.uom} borrowed by ${l.borrower}`));
-    c.append(grid(fld('Quantity returned', qty), fld('Date returned', date)), fld('Condition', cond), fld('Remarks', remarks));
-    d.button('Mark as returned', 'primary', async () => {
-      const r = await api.invReturn(l.id, { qty: qty.value, date: date.value, condition: cond.value, remarks: remarks.value });
-      if (!r.ok) { d.say(r.error, true); return; }
-      useState(r); d.close(); say('Return recorded.');
-    });
-    d.button('Cancel', '', d.close);
-  }
 
   // ----- item details -----
   function openDetail(id) {
@@ -1451,21 +1339,19 @@
     const add = (k, v) => { if (v === '' || v == null) return; const x = E('div'); x.append(E('span', '', k), document.createTextNode(String(v))); facts.appendChild(x); };
     add('Category', i.category); add('Group', i.group);
     add('On hand', fmtQty(i.stat.onHand) + ' ' + i.uom);
-    if (i.stat.onLoan) { add('Borrowed', fmtQty(i.stat.onLoan) + ' ' + i.uom); add('Available', fmtQty(i.stat.available) + ' ' + i.uom); }
     add('Reorder point', i.stat.rop ? fmtQty(i.stat.rop) + ' ' + i.uom : '');
     add('Suggested order', i.stat.suggest ? fmtQty(i.stat.suggest) + ' ' + i.uom : '');
     add('Daily use (90 d)', i.stat.avgDaily ? String(i.stat.avgDaily) : '');
     add('Lasts about', i.stat.coverDays != null ? (i.stat.coverDays < 1 ? 'under 1 day' : i.stat.coverDays + (i.stat.coverDays === 1 ? ' day' : ' days')) : '');
     add('Location', i.location); add('Supplier', i.supplier); add('Lead time', i.leadTimeDays ? i.leadTimeDays + ' days' : '');
-    add('Manufacturer barcode', i.barcode); add('Serial / tag', i.serial); add('Condition', i.condition);
-    add('Calibration due', fmtDate(i.calibrationDue)); add('Last movement', fmtDate(i.stat.last)); add('Notes', i.notes);
+    add('Manufacturer barcode', i.barcode);
+    add('Last movement', fmtDate(i.stat.last)); add('Notes', i.notes);
     c.append(facts);
 
     const acts = E('div', 'invRow');
     const mkb = (label, fn, cls) => { const b = E('button', cls || '', label); b.type = 'button'; b.addEventListener('click', () => { d.close(); fn(); }); acts.appendChild(b); };
     mkb('⬇ Stock in', () => openMove({ itemId: i.id, dir: 'in' }), 'primary');
     mkb('⬆ Stock out', () => openMove({ itemId: i.id, dir: 'out' }));
-    if (i.category === 'Tools & Equipment') mkb('🔧 Lend', () => openCheckout(i.id));
     mkb('Edit item', () => openItem(i));
     c.append(acts);
 
@@ -1477,18 +1363,6 @@
       moves.forEach(m => {
         const tr = E('tr');
         tr.append(td('', fmtDate(m.date)), td('', E('span', m.dir === 'in' ? 'invMoveIn' : 'invMoveOut', m.dir === 'in' ? 'IN' : 'OUT')), td('num', fmtQty(m.qty)), td('', m.reason), td('', m.party), td('', m.ref));
-        tb.appendChild(tr);
-      });
-      box.appendChild(t); c.append(box);
-    }
-    const loans = S.loans.filter(l => l.itemId === i.id).sort((a, b) => b.dateOut.localeCompare(a.dateOut)).slice(0, 20);
-    if (loans.length) {
-      c.append(E('div', 'invSub', 'Borrowing history'));
-      const box = E('div', 'invList');
-      const { t, tb } = table([{ label: 'Taken' }, { label: 'Borrower' }, { label: 'Qty', num: true }, { label: 'Status' }]);
-      loans.forEach(l => {
-        const tr = E('tr');
-        tr.append(td('', fmtDate(l.dateOut)), td('', l.borrower), td('num', fmtQty(l.qty)), td('', l.open > 0 ? 'Out' : 'Returned'));
         tb.appendChild(tr);
       });
       box.appendChild(t); c.append(box);
@@ -1652,6 +1526,13 @@
   }
 
   // ---------- clear data (with a warning first) ----------
+  async function askName() {
+    const n = await askText('Your name (saved on every entry you make)', S.settings.user || S.settings.defaultUser);
+    if (n == null) return;
+    const r2 = await api.invSettingsSet({ user: n });
+    if (r2.ok) { useState(r2); say('Saved.'); }
+  }
+
   function openClearAll() {
     const d = dialog('Sure ka?!', { small: true });
     const warn = E('div', 'invNote', '⚠ This removes data from this PC. A backup copy is saved first (More → Open data and backups folder), but if you later receive a file from another PC it may bring old entries back.');
@@ -1679,7 +1560,6 @@
   btnPrint.addEventListener('click', (e) => { e.stopPropagation(); openPrintMenu(btnPrint); });
   btnIn.addEventListener('click', () => openMove({ dir: 'in' }));
   btnOut.addEventListener('click', () => openMove({ dir: 'out' }));
-  btnLend.addEventListener('click', () => openCheckout());
   btnMore.addEventListener('click', (e) => {
     e.stopPropagation();
     const r = btnMore.getBoundingClientRect();
@@ -1692,12 +1572,7 @@
       { label: 'Form heading (company, department)…', run: openFormHeading },
       { label: 'Minimum levels (low-stock limits)…', run: openMinLevels },
       { label: 'Open data and backups folder', run: () => api.invOpenFolder() },
-      { label: 'Your name (saved on entries)…', run: async () => {
-        const n = await askText('Your name (saved on every entry you make)', S.settings.user || S.settings.defaultUser);
-        if (n == null) return;
-        const r2 = await api.invSettingsSet({ user: n });
-        if (r2.ok) { useState(r2); say('Saved.'); }
-      } },
+      { label: 'Your name (saved on entries)…', run: askName },
       '-',
       { label: 'Clear all data…', run: openClearAll }
     ]);
@@ -1713,21 +1588,19 @@
     else say('No single item matches "' + v + '".');
   });
 
-  // ---------- show / hide with the sidebar ----------
-  let loadedOnce = false;
-  function show() {
-    view.hidden = false;
-    if (!loadedOnce) { loadedOnce = true; load(); }
-    else load();
-  }
-  document.querySelectorAll('.navbtn').forEach(b => b.addEventListener('click', () => {
-    if (b.dataset.tab === 'inventory') show(); else view.hidden = true;
-  }));
-  // other code (reminders, intro) can switch tabs without a click
-  ['filesView', 'tasksView'].forEach(id => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    new MutationObserver(() => { if (!el.hidden) view.hidden = true; }).observe(el, { attributes: true, attributeFilter: ['hidden'] });
-  });
-  window.addEventListener('focus', () => { if (!view.hidden && !document.querySelector('.overlay')) load(); });
+  // ---------- load when the tab or the switch is used ----------
+  window.addEventListener('inv:show', load);
+  window.addEventListener('inv:mode', load);
+
+  // ---------- shared with tools-ui.js ----------
+  // Tools & Equipment is its own screen, but it uses the same dialogs, helpers and reports.
+  window.InvKit = {
+    get S() { return S; },
+    E, say, esc, fmtQty, fmtDate, daysBetween, addDays, lc, LIMIT,
+    dialog, fld, inp, sel, grid, datalist, itemInput, resolveItem,
+    load, useState,
+    openMove, openImport, exportExcel, openSync, openFormHeading, makeForm,
+    buildReport, reportDoc, rpTable, outputReport, deleteMove,
+    askName
+  };
 })();

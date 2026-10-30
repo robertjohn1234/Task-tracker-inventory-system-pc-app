@@ -46,7 +46,7 @@ contextBridge.exposeInMainWorld('api', {
   taskReview: () => ipcRenderer.invoke('task-review'),
   taskTestNotify: () => ipcRenderer.invoke('task-test-notify'),
 
-  invLoad: () => ipcRenderer.invoke('inv-load'),
+  invLoad: (scope) => ipcRenderer.invoke('inv-load', scope),
   invItemSave: (input) => ipcRenderer.invoke('inv-item-save', input),
   invItemDelete: (id) => ipcRenderer.invoke('inv-item-delete', id),
   invMoveBulk: (rows, opts) => ipcRenderer.invoke('inv-move-bulk', rows, opts),
@@ -73,6 +73,9 @@ contextBridge.exposeInMainWorld('api', {
   invMoveDelete: (id) => ipcRenderer.invoke('inv-move-delete', id),
   invCheckout: (input) => ipcRenderer.invoke('inv-checkout', input),
   invReturn: (id, input) => ipcRenderer.invoke('inv-return', id, input),
+  invRepairReport: (input) => ipcRenderer.invoke('inv-repair-report', input),
+  invRepairUpdate: (id, input) => ipcRenderer.invoke('inv-repair-update', id, input),
+  invEventUndo: (ev, dry) => ipcRenderer.invoke('inv-event-undo', ev, dry),
   invLoanDelete: (id) => ipcRenderer.invoke('inv-loan-delete', id),
   invSettingsSet: (patch) => ipcRenderer.invoke('inv-settings-set', patch),
   invOpenFolder: () => ipcRenderer.invoke('inv-open-folder'),

@@ -1,7 +1,11 @@
 node_modules/
 dist/
-WorkHelper-win32-x64/
-*.exe
-*.whinv
+out/
 *.log
+.DS_Store
+Thumbs.db
+# your data lives in %APPDATA%\work-helper, never in the project
+*.whinv
 .env
+# safety copies made by tools/organize.js
+../*-backup-*
