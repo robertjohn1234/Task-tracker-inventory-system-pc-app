@@ -50,6 +50,8 @@
     .tlDetail { display: grid; grid-template-columns: 250px 1fr; gap: 16px; }
     .tlPick { border: 2px dashed var(--border, #bbb); border-radius: 12px; width: 240px; height: 180px; display: flex; align-items: center; justify-content: center; text-align: center; color: var(--muted, #777);
       font-size: 13px; overflow: hidden; background: var(--panel2, #f4f5f7); padding: 6px; box-sizing: border-box; }
+    .tlDmg { display: inline-flex; align-items: center; gap: 4px; cursor: zoom-in; }
+    .tlDmg img { width: 56px; height: 42px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border, #ccc); }
     .tlPick.drop { border-color: var(--accent, #1f6feb); background: rgba(31, 111, 235, .1); }
     .tlPick img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; }
     .tlPickBtns { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
@@ -64,7 +66,10 @@
 
   // ---------- state of this screen ----------
   let tab = 'tools';
-  const F = { text: '', status: '', group: '', returned: false, closed: false, hPeriod: '30', hType: '' };
+  const F = { text: '', status: '', group: '', returned: false, closed: false, hPeriod: '30', hType: '', rPeriod: '30', iPeriod: '90' };
+  const hasPrice = (v) => typeof v === 'number' && v >= 0;
+  const peso = (n) => '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  const pesoOr = (n) => (hasPrice(n) ? peso(n) : '');
   let layout = 'cards';
   try { const v = localStorage.getItem('wh-tools-layout'); if (v === 'list' || v === 'cards') layout = v; } catch (e) {}
 
@@ -93,10 +98,9 @@
   const btnNew = E('button', 'primary', '＋ New tool');
   const btnLend = E('button', '', '🔧 Lend a tool');
   const btnReturn = E('button', '', '↩ Return a tool');
-  const btnDamage = E('button', '', '⚠ Report damage');
   const btnPrint = E('button', '', '🖨 Print / PDF');
   const btnMore = E('button', '', '⋯ More');
-  bar.append(btnNew, btnLend, btnReturn, btnDamage, btnPrint, btnMore);
+  bar.append(btnNew, btnLend, btnReturn, btnPrint, btnMore);
 
   const remind = E('div', 'tlRemind'); remind.hidden = true;
   const kpis = E('div', 'invKpis');
@@ -133,7 +137,7 @@
   }
   const itemById = (id) => S().items.find(i => i.id === id);
   function thumb(item) {
-    if (item && item.photo) { const im = document.createElement('img'); im.className = 'tlThumb'; im.src = item.photo; im.alt = ''; return im; }
+    if (item && item.photo) { const im = document.createElement('img'); im.className = 'tlThumb'; im.src = K.photoSrc(item.photo); im.loading = 'lazy'; im.alt = ''; return im; }
     return E('span', 'tlThumb', '🔧');
   }
   const words = () => lc(F.text).split(/\s+/).filter(Boolean);
@@ -154,8 +158,8 @@
           g.drawImage(img, 0, 0, c.width, c.height);
           return c.toDataURL('image/jpeg', q);
         };
-        let out = make(520, 0.82);
-        if (out.length > 240000) out = make(420, 0.7);
+        let out = make(440, 0.78);                 // small on purpose: thousands of tools, one file each
+        if (out.length > 240000) out = make(380, 0.7);
         if (out.length > 240000) out = make(320, 0.6);
         out.length > 245000 ? reject(new Error('too big')) : resolve(out);
       };
@@ -173,7 +177,7 @@
     file.type = 'file'; file.accept = 'image/*'; file.hidden = true;
     const paint = () => {
       box.innerHTML = '';
-      if (value) { const im = document.createElement('img'); im.src = value; im.alt = ''; box.appendChild(im); }
+      if (value) { const im = document.createElement('img'); im.src = K.photoSrc(value); im.alt = ''; box.appendChild(im); }
       else box.append(document.createTextNode('📷 No picture yet.\nChoose one, paste one (Ctrl+V) or drop it here.'));
       box.style.whiteSpace = 'pre-line';
     };
@@ -236,6 +240,8 @@
       if (F.status === 'borrowed' && !(i.stat.onLoan > 0)) return false;
       if (F.status === 'broken' && !(i.stat.inRepair > 0)) return false;
       if (F.status === 'calibration' && !calDue(i)) return false;
+      if (F.status === 'noprice' && hasPrice(i.price)) return false;
+      if (F.status === 'noloc' && i.location) return false;
       if (F.group && i.group !== F.group) return false;
       if (!w.length) return true;
       const hay = lc([i.code, i.name, i.group, i.location, i.barcode, i.serial, i.supplier].join(' '));
@@ -293,7 +299,7 @@
   function renderTabs() {
     tabs.innerHTML = '';
     const seg = E('div', 'invSeg');
-    [['tools', 'Tools'], ['loans', 'Borrowed'], ['repairs', 'Repairs'], ['history', 'History']].forEach(([k, label]) => {
+    [['tools', 'Tools'], ['loans', 'Borrowed'], ['repairs', 'Repairs'], ['records', 'Records'], ['removed', 'Removed'], ['insights', 'Insights'], ['history', 'History']].forEach(([k, label]) => {
       const b = E('button', tab === k ? 'on' : '', label); b.type = 'button';
       b.addEventListener('click', () => { tab = k; render(); });
       seg.appendChild(b);
@@ -305,7 +311,7 @@
     filters.innerHTML = '';
     if (tab === 'tools') {
       const groups = [...new Set(S().items.map(i => i.group).filter(Boolean))].sort();
-      filters.append(select([['available', 'Available now'], ['borrowed', 'Borrowed'], ['broken', 'Damaged / in repair'], ['calibration', 'Calibration due'], ['archived', 'Archived']], F.status, v => { F.status = v; renderBody(); }, 'Any status'));
+      filters.append(select([['available', 'Available now'], ['borrowed', 'Borrowed'], ['broken', 'Damaged / in repair'], ['calibration', 'Calibration due'], ['noprice', 'Missing price'], ['noloc', 'Missing location'], ['archived', 'Archived']], F.status, v => { F.status = v; renderBody(); }, 'Any status'));
       if (groups.length) filters.append(select(groups.map(g => [g, g]), F.group, v => { F.group = v; renderBody(); }, 'All types'));
     } else if (tab === 'loans') {
       const l = E('label', 'invChk');
@@ -319,7 +325,19 @@
       c.addEventListener('change', () => { F.closed = c.checked; renderBody(); });
       l.append(c, E('span', '', 'Also show closed (repaired, written off, lost)'));
       const b = E('button', 'primary', '＋ Report damaged / lost tool'); b.type = 'button'; b.addEventListener('click', () => openReport());
-      filters.append(l, b);
+      const g = E('button', '', '📄 Generate report…'); g.type = 'button'; g.title = 'A formal report of damaged and missing tools, with pictures';
+      g.addEventListener('click', () => window.DamagedReport && window.DamagedReport.open());
+      filters.append(l, b, g);
+    } else if (tab === 'insights') {
+      filters.append(select([['30', 'Last 30 days'], ['90', 'Last 90 days'], ['180', 'Last 6 months'], ['365', 'Last year']], F.iPeriod, v => { F.iPeriod = v; renderBody(); }, null));
+      const p = E('button', '', '🖨 Print / PDF'); p.type = 'button'; p.addEventListener('click', () => K.outputReport(insightsReport()));
+      filters.appendChild(p);
+    } else if (tab === 'records' || tab === 'removed') {
+      filters.append(select([['1', 'Today'], ['7', 'Last 7 days'], ['30', 'Last 30 days'], ['90', 'Last 90 days'], ['365', 'Last year']], F.rPeriod, v => { F.rPeriod = v; renderBody(); }, 'All dates'));
+      const p = E('button', '', '🖨 Print / PDF'); p.type = 'button'; p.addEventListener('click', () => K.outputReport(tab === 'records' ? recordsReport() : removedReport()));
+      filters.appendChild(p);
+      if (tab === 'records') { const b = E('button', 'primary', '＋ Add units'); b.type = 'button'; b.addEventListener('click', () => openUnits({ dir: 'in' })); filters.appendChild(b); }
+      else { const b = E('button', '', '－ Remove units'); b.type = 'button'; b.addEventListener('click', () => openUnits({ dir: 'out' })); filters.appendChild(b); }
     } else if (tab === 'history') {
       filters.append(
         select([['1', 'Today'], ['7', 'Last 7 days'], ['30', 'Last 30 days'], ['90', 'Last 90 days']], F.hPeriod, v => { F.hPeriod = v; renderBody(); }, 'All dates'),
@@ -330,6 +348,7 @@
 
   function render() {
     if (!S()) return;
+    window.PhotoBase = S().photoBase || window.PhotoBase || '';
     bCards.className = layout === 'cards' ? 'on' : ''; bList.className = layout === 'list' ? 'on' : '';
     renderRemind(); renderKpis(); renderTabs(); renderFilters(); renderBody();
   }
@@ -339,6 +358,9 @@
     if (tab === 'tools') renderTools();
     else if (tab === 'loans') renderLoans();
     else if (tab === 'repairs') renderRepairs();
+    else if (tab === 'records') renderRecords();
+    else if (tab === 'removed') renderRemoved();
+    else if (tab === 'insights') renderInsights();
     else renderHistory();
   }
 
@@ -391,7 +413,7 @@
     c.addEventListener('keydown', (e) => { if (e.key === 'Enter') openToolDetail(i.id); });
     c.addEventListener('contextmenu', (e) => { e.preventDefault(); itemMenu(e, i); });
     const ph = E('div', 'tlPhoto');
-    if (i.photo) { const im = document.createElement('img'); im.src = i.photo; im.alt = i.name; im.loading = 'lazy'; ph.appendChild(im); } else ph.textContent = '🔧';
+    if (i.photo) { const im = document.createElement('img'); im.src = K.photoSrc(i.photo); im.alt = i.name; im.loading = 'lazy'; im.decoding = 'async'; ph.appendChild(im); } else ph.textContent = '🔧';
     const chips = chipsFor(i);
     ph.appendChild(chip(chips[0][0], chips[0][1]));
     if (chips[1]) ph.appendChild(E('span', 'tlChip tlChip2 ' + (chips[1][1] || ''), chips[1][0]));
@@ -422,8 +444,8 @@
       i.stat.onLoan > 0 ? { label: 'Return…', run: () => returnForItem(i) } : null,
       { label: 'Report damage / lost…', run: () => openReport(i.id) },
       '-',
-      { label: 'Add units…', run: () => K.openMove({ itemId: i.id, dir: 'in' }) },
-      { label: 'Remove units…', run: () => K.openMove({ itemId: i.id, dir: 'out' }) },
+      { label: 'Add units…', run: () => openUnits({ itemId: i.id, dir: 'in' }) },
+      { label: 'Remove units…', run: () => openUnits({ itemId: i.id, dir: 'out' }) },
       { label: 'Edit…', run: () => openTool(i) }
     ].filter(Boolean));
   }
@@ -441,6 +463,7 @@
       location: inp('text', item ? item.location : '', { maxLength: 120 }),
       supplier: inp('text', item ? item.supplier : '', { maxLength: 120 }),
       barcode: inp('text', item ? item.barcode : '', { maxLength: 60 }),
+      price: inp('number', item && hasPrice(item.price) ? item.price : ''),
       condition: sel([['', '—']].concat(S().conditions.map(c => [c, c])), item ? item.condition : 'Good'),
       calibrationDue: inp('date', item ? item.calibrationDue : ''),
       startQty: inp('number', '1'),
@@ -471,7 +494,7 @@
     right.append(grid(fld('Storage location', f.location), fld('Supplier', f.supplier)));
     right.append(grid(fld('Condition', f.condition), fld('Calibration due (instruments)', f.calibrationDue)));
     if (!editing) right.append(grid(fld('How many do you have?', f.startQty), fld('As of date', f.startDate)));
-    right.append(fld('Manufacturer barcode (optional)', f.barcode));
+    right.append(grid(fld('Price per unit, ₱ (optional)', f.price, 'Leave empty if you do not know it yet.'), fld('Manufacturer barcode (optional)', f.barcode)));
     right.append(fld('Notes', f.notes));
     if (editing) { const arch = E('label', 'invChk'); arch.append(f.archived, E('span', '', 'Archived (hide from lists; history is kept)')); right.append(arch); }
     const c = d.content;
@@ -485,7 +508,7 @@
         id: item ? item.id : undefined, category: TOOLS,
         name: f.name.value, code: f.code.value, uom: f.uom.value, group: f.group.value, serial: f.serial.value,
         location: f.location.value, supplier: f.supplier.value, barcode: f.barcode.value,
-        condition: f.condition.value, calibrationDue: f.calibrationDue.value,
+        condition: f.condition.value, calibrationDue: f.calibrationDue.value, price: f.price.value,
         startQty: f.startQty.value, startDate: f.startDate.value, notes: f.notes.value, archived: f.archived.checked
       };
       if (pic.changed() || !editing) input.photo = pic.get();
@@ -515,7 +538,7 @@
     const c = d.content;
     const wrap = E('div', 'tlDetail');
     const left = E('div');
-    if (i.photo) { const im = document.createElement('img'); im.className = 'tlHero'; im.src = i.photo; im.alt = i.name; left.appendChild(im); }
+    if (i.photo) { const im = document.createElement('img'); im.className = 'tlHero'; im.src = K.photoSrc(i.photo); im.alt = i.name; left.appendChild(im); }
     else { const ph = E('div', 'tlPhoto', '🔧'); ph.style.borderRadius = '12px'; left.appendChild(ph); }
     const right = E('div');
     const head = E('div', 'invRow');
@@ -527,6 +550,7 @@
     add('Total', fmtQty(i.stat.onHand) + ' ' + i.uom); add('Available', fmtQty(i.stat.available) + ' ' + i.uom);
     add('Borrowed', i.stat.onLoan ? fmtQty(i.stat.onLoan) + ' ' + i.uom : ''); add('Damaged / in repair', i.stat.inRepair ? fmtQty(i.stat.inRepair) + ' ' + i.uom : '');
     add('Type', i.group); add('Serial / tag', i.serial); add('Condition', i.condition); add('Calibration due', fmtDate(i.calibrationDue));
+    add('Price per unit', pesoOr(i.price)); add('Value in stock', hasPrice(i.price) ? peso(i.price * i.stat.onHand) : '');
     add('Location', i.location); add('Supplier', i.supplier); add('Barcode', i.barcode); add('Last movement', fmtDate(i.stat.last)); add('Notes', i.notes);
     right.append(facts);
 
@@ -535,8 +559,8 @@
     mkb('🔧 Lend', () => openCheckout(i.id), 'primary', i.archived || i.stat.available <= 0);
     if (i.stat.onLoan > 0) mkb('↩ Return', () => returnForItem(i));
     mkb('⚠ Report damage', () => openReport(i.id));
-    mkb('＋ Add units', () => K.openMove({ itemId: i.id, dir: 'in' }));
-    mkb('－ Remove units', () => K.openMove({ itemId: i.id, dir: 'out' }));
+    mkb('＋ Add units', () => openUnits({ itemId: i.id, dir: 'in' }));
+    mkb('－ Remove units', () => openUnits({ itemId: i.id, dir: 'out' }));
     mkb('✎ Edit', () => openTool(i));
     right.append(acts);
     wrap.append(left, right);
@@ -584,7 +608,11 @@
       tr.append(td('', thumb(itemById(l.itemId))), td('code', l.itemCode), td('', l.itemName), td('num', fmtQty(l.open > 0 ? l.open : l.qty) + ' ' + l.uom),
         td('', l.borrower), td('', l.location), td('', l.ref), td('', fmtDate(l.dateOut)), td('', fmtDate(l.dueDate)));
       let status;
-      if (l.open <= 0) status = E('span', 'pill', 'Returned ' + fmtDate(l.returns.length ? l.returns[l.returns.length - 1].date : ''));
+      if (l.open <= 0) {
+        const last = l.returns[l.returns.length - 1];
+        status = E('span', 'pill', 'Returned ' + fmtDate(last ? last.date : ''));
+        if (last) status.title = `Returned by ${last.returnedBy || l.borrower}` + (last.receivedBy ? `, received by ${last.receivedBy}` : '');
+      }
       else if (overdue) status = E('span', 'pill over', `Overdue ${daysBetween(l.dueDate, S().today)} d`);
       else status = E('span', 'pill doing', `Out ${daysBetween(l.dateOut, S().today)} d`);
       tr.append(td('', status));
@@ -596,6 +624,7 @@
       tb.appendChild(tr);
     });
     body.appendChild(t);
+    if (list.length > LIMIT) body.appendChild(E('div', 'invNote', `Showing the first ${LIMIT} of ${list.length}. Type in the search box to narrow it down.`));
     if (!list.length) body.appendChild(E('div', 'invEmpty', F.returned ? 'No loan records.' : 'No tools are out right now.'));
   }
 
@@ -608,12 +637,12 @@
       return w.every(x => lc([r.itemCode, r.itemName, r.borrower, r.note, r.kind].join(' ')).includes(x));
     }).sort((a, b) => (a.status === 'open' ? 0 : 1) - (b.status === 'open' ? 0 : 1) || b.date.localeCompare(a.date));
     const { t, tb } = table([{ label: '' }, { label: 'Code' }, { label: 'Tool' }, { label: 'Qty', num: true }, { label: 'Problem' }, { label: 'Reported' },
-      { label: 'Returned by' }, { label: 'Note' }, { label: 'Status' }, { label: '' }]);
+      { label: 'Borrower / reported by' }, { label: 'Note' }, { label: 'Photos' }, { label: 'Status' }, { label: '' }]);
     const STATUS = { open: 'Out of service', fixed: 'Repaired', scrapped: 'Written off', lost: 'Lost' };
     list.slice(0, LIMIT).forEach(r => {
       const tr = E('tr');
       tr.append(td('', thumb(itemById(r.itemId))), td('code', r.itemCode), td('', r.itemName), td('num', fmtQty(r.qty) + ' ' + r.uom), td('', r.kind), td('', fmtDate(r.date)),
-        td('', r.borrower || r.by), td('', r.note));
+        td('', r.borrower || r.by), td('', r.note), td('', damageThumbs(r)));
       const stt = r.status === 'open' ? E('span', 'pill over', `${STATUS.open} ${daysBetween(r.date, S().today)} d`) : E('span', 'pill', `${STATUS[r.status]} ${fmtDate(r.closedDate)}`);
       tr.append(td('', stt));
       const act = td('act');
@@ -621,12 +650,33 @@
         act.append(actBtn('Repaired', 'Back in service', () => openCloseRepair(r, 'fixed')), document.createTextNode(' '),
           actBtn('Write off', 'Cannot be repaired: remove from stock', () => openCloseRepair(r, 'scrap')), document.createTextNode(' '));
       }
+      act.append(actBtn('📷', 'Add or mark damage photos', () => editDamagePhotos(r)), document.createTextNode(' '));
       act.append(actBtn('↩', 'Undo this entry (entered by mistake)', () => undoFlow({ type: 'damage', id: r.id })));
       tr.appendChild(act);
       tb.appendChild(tr);
     });
     body.appendChild(t);
     if (!list.length) body.appendChild(E('div', 'invEmpty', 'No damaged tools. When a tool comes back damaged, choose its condition on Return and it appears here.'));
+  }
+
+  // small pictures of the damage in the Repairs list (click to see them big)
+  function damageThumbs(r) {
+    const list = r.photos || [];
+    if (!list.length || !window.DamagePhotos) return '';
+    const wrap = E('span', 'tlDmg');
+    const im = document.createElement('img'); im.src = window.PhotoSrc(list[0]); im.loading = 'lazy'; im.alt = ''; im.title = 'Click to see the damage photos';
+    wrap.append(im);
+    if (list.length > 1) wrap.append(E('small', '', '+' + (list.length - 1)));
+    wrap.addEventListener('click', () => window.DamagePhotos.view(list, `${r.itemName} — ${r.kind.toLowerCase()}`, () => editDamagePhotos(r)));
+    return wrap;
+  }
+  function editDamagePhotos(r) {
+    if (!window.DamagePhotos) return;
+    window.DamagePhotos.edit(r.photos || [], `Damage photos — ${r.itemName}`, async (list) => {
+      const x = await api.invRepairUpdate(r.id, { action: 'photos', photos: list });
+      if (!x.ok) return x.error;
+      useState(x); say('Photos saved.');
+    });
   }
 
   function openCloseRepair(r, action) {
@@ -636,10 +686,17 @@
     const note = inp('text', '', { maxLength: 300 });
     const c = d.content;
     c.append(E('p', '', `${r.itemName} — ${fmtQty(r.qty)} ${r.uom} (${r.kind.toLowerCase()})`));
-    if (scrap) c.append(E('p', 'invNote', 'The units leave the stock count (a Stock Out entry is saved) and stay in this log.'));
-    c.append(grid(fld(scrap ? 'Date written off' : 'Date repaired', date), fld('Note (optional)', note)));
+    const boss = inp('text', '', { maxLength: 120 });
+    if (scrap) c.append(E('p', 'invNote', 'The units leave the stock count (a Stock Out entry is saved) and stay in this log. This needs the boss: his or her name and the admin PIN.'));
+    c.append(grid(fld(scrap ? 'Date written off' : 'Date repaired', date), fld(scrap ? 'What happened (required)' : 'Note (optional)', note)));
+    if (scrap) c.append(fld('Approved by (the boss)', boss));
     d.button(scrap ? 'Write off' : 'Back in service', 'primary', async () => {
-      const x = await api.invRepairUpdate(r.id, { action, date: date.value, note: note.value });
+      if (scrap && note.value.trim().length < 5) { d.say('Please explain what happened (a few words).', true); return; }
+      if (scrap && boss.value.trim().length < 2) { d.say('Type the name of the boss who approved this.', true); return; }
+      const x = scrap
+        ? await K.withPin((pin) => api.invRepairUpdate(r.id, { action, date: date.value, note: note.value, approvedBy: boss.value, pin }), `Write off ${r.itemName} (${fmtQty(r.qty)})`)
+        : await api.invRepairUpdate(r.id, { action, date: date.value, note: note.value });
+      if (x.canceled) return;
       if (!x.ok) { d.say(x.error, true); return; }
       useState(x); d.close(); say(scrap ? 'Written off.' : 'Back in service.');
     });
@@ -649,7 +706,7 @@
   // a tool found broken in the store (not through a return)
   function openReport(itemId) {
     const preset = itemId ? itemById(itemId) : null;
-    const d = dialog('Report damaged / lost tool', { small: true });
+    const d = dialog('Report damaged / lost tool', {});
     const pool = S().items.filter(i => !i.archived);
     const item = itemInput('tlDamList', pool, preset);
     const info = E('div', 'invInfo');
@@ -657,21 +714,276 @@
     const qty = inp('number', '1');
     const date = inp('date', S().today);
     const note = inp('text', '', { maxLength: 500 });
+    const pics = window.DamagePhotos ? window.DamagePhotos.picker([], d.overlay, (m) => d.say(m, !!m)) : null;
+    const boss = inp('text', '', { maxLength: 120 });
+    const bossFld = fld('Approved by (the boss) — needed for a lost tool', boss, 'A lost tool leaves the stock. The admin PIN is asked when you save.');
+    const syncKind = () => { bossFld.style.display = kind.value === 'Lost' ? '' : 'none'; };
+    kind.addEventListener('change', syncKind);
     const showInfo = () => { const it = resolveItem(item.value); info.textContent = it ? `In the store and in good order: ${fmtQty(it.stat.available)} of ${fmtQty(it.stat.onHand)} ${it.uom}` : ''; };
     item.addEventListener('input', showInfo); item.addEventListener('change', showInfo);
     const c = d.content;
     c.append(fld('Tool', item), info, grid(fld('Problem', kind), fld('How many', qty)), grid(fld('Date', date), fld('What happened', note)));
-    showInfo();
+    if (pics) c.append(fld('Photos of the damage (optional)', pics.el, 'Add up to 3 pictures, then use ✏ Mark to circle or point at the damaged part.'));
+    c.append(bossFld);
+    syncKind(); showInfo();
     d.button('Save', 'primary', async () => {
       const it = resolveItem(item.value);
       if (!it) { d.say('Please pick the tool from the list.', true); return; }
-      const r = await api.invRepairReport({ itemId: it.id, kind: kind.value, qty: qty.value, date: date.value, note: note.value });
+      const body = { itemId: it.id, kind: kind.value, qty: qty.value, date: date.value, note: note.value, photos: pics ? pics.get() : [] };
+      const r = kind.value === 'Lost'
+        ? await K.withPin((pin) => api.invRepairReport(Object.assign({}, body, { approvedBy: boss.value, pin })), `Report LOST: ${it.name}`)
+        : await api.invRepairReport(body);
+      if (r.canceled) return;
       if (!r.ok) { d.say(r.error, true); return; }
       useState(r); d.close(); say('Saved in the Repairs list.');
       tab = 'repairs'; render();
     });
     d.button('Cancel', '', d.close);
     (preset ? note : item).focus();
+  }
+
+
+  // ---------- Records tab: new tools and added units ----------
+  const inPeriod = (date) => !F.rPeriod || date >= addDays(S().today, -(parseInt(F.rPeriod, 10) - 1));
+  function recordRows() {
+    const s = S(); const rows = [];
+    const tool = (id) => itemById(id);
+    s.items.forEach(i => {
+      const day = String(i.createdAt || '').slice(0, 10);
+      if (!day || !inPeriod(day)) return;
+      const open = s.movements.find(m => m.itemId === i.id && m.dir === 'in' && m.reason === 'Opening balance' && String(m.createdAt || '').slice(0, 10) === day);
+      rows.push({ type: 'tool', date: day, at: i.createdAt || '', item: i, label: 'New tool', qty: open ? open.qty : 0, party: i.supplier || '', ref: '', price: i.price, remarks: open ? 'Starting quantity' : '', by: i.by || '', m: null, skipId: open ? open.id : '' });
+    });
+    const skip = new Set(rows.map(r => r.skipId).filter(Boolean));
+    s.movements.forEach(m => {
+      if (m.dir !== 'in' || skip.has(m.id) || !inPeriod(m.date) || !tool(m.itemId)) return;
+      rows.push({ type: 'units', date: m.date, at: m.createdAt || '', item: tool(m.itemId), label: 'Units added', qty: m.qty, party: m.party || '', ref: m.ref || '', price: m.price, remarks: [m.reason, m.remarks].filter(Boolean).join(' · '), by: m.by || '', m });
+    });
+    rows.sort((a, b) => (b.date + b.at).localeCompare(a.date + a.at));
+    return rows;
+  }
+  function renderRecords() {
+    const w = words();
+    const rows = recordRows().filter(r => !w.length || w.every(x => lc([r.item.code, r.item.name, r.party, r.ref, r.remarks, r.by].join(' ')).includes(x)));
+    const { t, tb } = table([{ label: '' }, { label: 'Date' }, { label: 'Code' }, { label: 'Tool' }, { label: 'What' }, { label: 'Qty', num: true }, { label: 'Supplier / from' }, { label: 'DR / PO no.' }, { label: 'Price / unit', num: true }, { label: 'Remarks' }, { label: 'Entered by' }, { label: '' }]);
+    rows.slice(0, LIMIT).forEach(r => {
+      const tr = E('tr');
+      tr.append(td('', thumb(r.item)), td('', fmtDate(r.date)), td('code', r.item.code), td('', r.item.name), td('', E('span', r.type === 'tool' ? 'pill doing' : 'pill', r.label)),
+        td('num', r.qty ? fmtQty(r.qty) + ' ' + (r.item.uom || '') : ''), td('', r.party), td('', r.ref), td('num', pesoOr(r.price)), td('', r.remarks), td('', r.by));
+      const act = td('act');
+      if (r.m) act.append(actBtn('✎', 'Correct this entry (admin PIN)', () => openUnits({ move: r.m })));
+      tr.appendChild(act); tb.appendChild(tr);
+    });
+    body.appendChild(t);
+    body.appendChild(E('div', rows.length ? 'invNote' : 'invEmpty', rows.length ? `${rows.length} record${rows.length === 1 ? '' : 's'}. Every new tool and every added unit is listed here with the supplier and delivery receipt / PO number.` : 'No new tools or added units in this period.'));
+  }
+  function recordsReport() {
+    const rows = recordRows().map(r => `<tr><td>${esc(fmtDate(r.date))}</td><td>${esc(r.item.code)}</td><td>${esc(r.item.name)}</td><td>${esc(r.label)}</td><td class="num">${r.qty ? fmtQty(r.qty) + ' ' + esc(r.item.uom || '') : ''}</td><td>${esc(r.party)}</td><td>${esc(r.ref)}</td><td class="num">${esc(pesoOr(r.price))}</td><td>${esc(r.remarks)}</td><td>${esc(r.by)}</td></tr>`).join('');
+    return { title: 'Tool records', html: K.reportDoc('New tools and added units', `${recordRows().length} records · ${fmtDate(S().today)}`, K.rpTable([{ label: 'Date' }, { label: 'Code' }, { label: 'Tool' }, { label: 'What' }, { label: 'Qty', num: true }, { label: 'Supplier / from' }, { label: 'DR / PO no.' }, { label: 'Price / unit', num: true }, { label: 'Remarks' }, { label: 'Entered by' }], rows) + '<div class="sign"><div>Prepared by</div><div>Noted by</div></div>'), landscape: true };
+  }
+
+  // ---------- Removed tab: every unit that left the stock, with who approved it ----------
+  function removedRows() {
+    return S().movements.filter(m => m.dir === 'out' && inPeriod(m.date) && itemById(m.itemId)).sort((a, b) => (b.date + (b.createdAt || '')).localeCompare(a.date + (a.createdAt || '')));
+  }
+  function renderRemoved() {
+    const w = words();
+    const rows = removedRows().filter(m => { const it = itemById(m.itemId); return !w.length || w.every(x => lc([it.code, it.name, m.reason, m.remarks, m.approvedBy, m.by].join(' ')).includes(x)); });
+    const { t, tb } = table([{ label: '' }, { label: 'Date' }, { label: 'Code' }, { label: 'Tool' }, { label: 'Qty', num: true }, { label: 'Value', num: true }, { label: 'Why' }, { label: 'What happened' }, { label: 'Approved by' }, { label: 'Entered by' }, { label: '' }]);
+    rows.slice(0, LIMIT).forEach(m => {
+      const it = itemById(m.itemId); const tr = E('tr');
+      tr.append(td('', thumb(it)), td('', fmtDate(m.date)), td('code', it.code), td('', it.name), td('num', fmtQty(m.qty) + ' ' + (it.uom || '')), td('num', hasPrice(it.price) ? peso(it.price * m.qty) : ''), td('', E('span', 'pill over', m.reason || '')), td('', m.remarks), td('', m.approvedBy || '—'), td('', m.by));
+      const act = td('act');
+      act.append(actBtn('🗑', 'Delete this entry (admin PIN)', () => K.deleteMove(Object.assign({}, m, { uom: it.uom, itemName: it.name }))));
+      tr.appendChild(act); tb.appendChild(tr);
+    });
+    body.appendChild(t);
+    body.appendChild(E('div', rows.length ? 'invNote' : 'invEmpty', rows.length ? `${rows.length} removal${rows.length === 1 ? '' : 's'}. Removing units needs a reason, an explanation, the boss's name and the admin PIN. Print this list for the boss to sign.` : 'No units removed in this period.'));
+  }
+  function removedReport() {
+    const rows = removedRows().map(m => { const it = itemById(m.itemId); return `<tr><td>${esc(fmtDate(m.date))}</td><td>${esc(it.code)}</td><td>${esc(it.name)}</td><td class="num">${fmtQty(m.qty)} ${esc(it.uom || '')}</td><td class="num">${hasPrice(it.price) ? esc(peso(it.price * m.qty)) : ''}</td><td>${esc(m.reason)}</td><td>${esc(m.remarks)}</td><td>${esc(m.approvedBy)}</td><td>${esc(m.by)}</td></tr>`; }).join('');
+    return { title: 'Removed units', html: K.reportDoc('Tools removed from the stock', `${removedRows().length} removals · ${fmtDate(S().today)}`, K.rpTable([{ label: 'Date' }, { label: 'Code' }, { label: 'Tool' }, { label: 'Qty', num: true }, { label: 'Value', num: true }, { label: 'Why' }, { label: 'What happened' }, { label: 'Approved by' }, { label: 'Entered by' }], rows) + '<div class="sign"><div>Prepared by</div><div>Approved by (boss)</div></div>'), landscape: true };
+  }
+
+
+  // ---------- Insights tab ----------
+  const IDLE_DAYS = 90;
+  function insightsData() {
+    const s = S(), today = s.today;
+    const from = addDays(today, -(parseInt(F.iPeriod, 10) - 1));
+    const live = s.items.filter(i => !i.archived);
+    const byId = new Map(s.items.map(i => [i.id, i]));
+    const secs = [];
+    const val = (i, q) => (hasPrice(i.price) ? peso(i.price * q) : '');
+
+    // 1. needs attention
+    const att = [];
+    s.loans.filter(l => l.open > 0 && l.dueDate && l.dueDate < today).forEach(l => att.push({ days: daysBetween(l.dueDate, today), itemId: l.itemId, cells: ['Overdue return', l.itemName, `${l.borrower} · ${fmtQty(l.open)} ${l.uom}`, `${daysBetween(l.dueDate, today)} days late`] }));
+    live.filter(i => i.calibrationDue && i.calibrationDue <= addDays(today, 30)).forEach(i => { const dd = daysBetween(i.calibrationDue, today); att.push({ days: dd, itemId: i.id, cells: ['Calibration', i.name, fmtDate(i.calibrationDue), dd > 0 ? `${dd} days overdue` : `in ${-dd} days`] }); });
+    s.repairs.filter(r => r.status === 'open' && daysBetween(r.date, today) > 30).forEach(r => att.push({ days: daysBetween(r.date, today), itemId: r.itemId, cells: ['Still in repair', r.itemName, `${fmtQty(r.qty)} ${r.uom} · ${r.kind}${r.borrower ? ' · ' + r.borrower : ''}`, `${daysBetween(r.date, today)} days`] }));
+    att.sort((a, b) => b.days - a.days);
+    secs.push({ id: 'attention', title: '1. Needs attention', note: 'Overdue returns, calibration due in 30 days or already overdue, and tools in repair for more than 30 days.', cols: [{ label: 'What' }, { label: 'Tool' }, { label: 'Who / detail' }, { label: 'When' }], rows: att.slice(0, 40), empty: 'Nothing needs attention right now.' });
+
+    // 2. problem tools and people
+    const rep = s.repairs.filter(r => r.date >= from);
+    const tm = new Map();
+    rep.forEach(r => { const x = tm.get(r.itemId) || { n: 0, q: 0, lost: 0 }; x.n++; x.q += r.qty; if (r.kind === 'Lost' || r.status === 'lost') x.lost += r.qty; tm.set(r.itemId, x); });
+    const pt = [...tm.entries()].map(([id, x]) => ({ i: byId.get(id), x })).filter(e => e.i).sort((a, b) => b.x.q - a.x.q || b.x.n - a.x.n).slice(0, 8)
+      .map(e => ({ itemId: e.i.id, cells: [e.i.name, String(e.x.n), fmtQty(e.x.q), e.x.lost ? fmtQty(e.x.lost) : '', val(e.i, e.x.q)] }));
+    secs.push({ id: 'ptools', title: '2a. Problem tools', note: 'Tools reported damaged or lost most often in the period. Consider replacing them or checking how they are used.', cols: [{ label: 'Tool' }, { label: 'Reports', num: true }, { label: 'Units', num: true }, { label: 'Lost', num: true }, { label: 'Value', num: true }], rows: pt, empty: 'No damage or loss reports in this period.' });
+    const pm = new Map();
+    const P = (n) => { const k = lc(n.trim()); if (!pm.has(k)) pm.set(k, { name: n.trim(), loans: 0, late: 0, bad: 0 }); return pm.get(k); };
+    s.loans.filter(l => l.dateOut >= from && l.borrower).forEach(l => {
+      const p = P(l.borrower); p.loans++;
+      (l.returns || []).forEach(r => { if (l.dueDate && r.date > l.dueDate) p.late++; });
+      if (l.open > 0 && l.dueDate && l.dueDate < today) p.late++;
+    });
+    rep.filter(r => r.borrower).forEach(r => { P(r.borrower).bad += r.qty; });
+    const pp = [...pm.values()].filter(p => p.late || p.bad).sort((a, b) => (b.late + b.bad) - (a.late + a.bad)).slice(0, 8).map(p => ({ cells: [p.name, String(p.loans), p.late ? String(p.late) : '', p.bad ? fmtQty(p.bad) : ''] }));
+    secs.push({ id: 'ppeople', title: '2b. Borrowers to follow up', note: 'Late returns and damaged / lost units under a borrower\'s name in the period.', cols: [{ label: 'Borrower' }, { label: 'Loans', num: true }, { label: 'Late returns', num: true }, { label: 'Damaged / lost units', num: true }], rows: pp, empty: 'No late returns or damage in this period.' });
+
+    // 3. idle tools
+    const lastLent = new Map();
+    s.loans.forEach(l => { if (!lastLent.has(l.itemId) || l.dateOut > lastLent.get(l.itemId)) lastLent.set(l.itemId, l.dateOut); });
+    const idle = live.filter(i => i.stat.onHand > 0).map(i => {
+      const last = lastLent.get(i.id) || '';
+      const since = last || String(i.createdAt || '').slice(0, 10) || today;
+      return { i, last, days: daysBetween(since, today) };
+    }).filter(e => e.days >= IDLE_DAYS).sort((a, b) => b.days - a.days).slice(0, 15)
+      .map(e => ({ itemId: e.i.id, cells: [e.i.name, `${fmtQty(e.i.stat.onHand)} ${e.i.uom}`, e.i.location, e.last ? fmtDate(e.last) : 'never lent', `${e.days} days`, val(e.i, e.i.stat.onHand)] }));
+    secs.push({ id: 'idle', title: '3. Idle tools', note: `Not lent for ${IDLE_DAYS} days or more (or never lent). They may be misplaced, not needed, or worth moving to another site.`, cols: [{ label: 'Tool' }, { label: 'In stock', num: true }, { label: 'Location' }, { label: 'Last lent' }, { label: 'Idle', num: true }, { label: 'Value', num: true }], rows: idle, empty: 'No idle tools.' });
+
+    // 4. always out
+    const lent = new Map();
+    s.loans.filter(l => l.dateOut >= from).forEach(l => lent.set(l.itemId, (lent.get(l.itemId) || 0) + 1));
+    const hot = live.filter(i => i.stat.onHand > 0 && (i.stat.available <= 0 || ((lent.get(i.id) || 0) >= 3 && i.stat.available / i.stat.onHand <= 0.34)))
+      .sort((a, b) => (lent.get(b.id) || 0) - (lent.get(a.id) || 0)).slice(0, 10)
+      .map(i => ({ itemId: i.id, cells: [i.name, fmtQty(i.stat.onHand), fmtQty(i.stat.available), String(lent.get(i.id) || 0), i.stat.available <= 0 ? 'All out now: consider buying more' : 'Often borrowed, few left'] }));
+    secs.push({ id: 'hot', title: '4. Tools that are always out', note: 'Tools with nothing available now, or borrowed often with little left. These are the ones to buy more of.', cols: [{ label: 'Tool' }, { label: 'Units', num: true }, { label: 'Available', num: true }, { label: 'Lent (period)', num: true }, { label: 'Suggestion' }], rows: hot, empty: 'No tool is short right now.' });
+
+    // 5. losses and removals
+    const outs = s.movements.filter(m => m.dir === 'out' && m.date >= from && byId.has(m.itemId));
+    const agg = (keyFn) => { const m = new Map(); outs.forEach(o => { const k = keyFn(o); const x = m.get(k) || { n: 0, q: 0, v: 0, pq: 0 }; const it = byId.get(o.itemId); x.n++; x.q += o.qty; if (hasPrice(it.price)) { x.v += it.price * o.qty; x.pq += o.qty; } m.set(k, x); }); return m; };
+    const monthTxt = (k) => { const [y, mo] = k.split('-'); return new Date(+y, +mo - 1, 1).toLocaleString('en-US', { month: 'long', year: 'numeric' }); };
+    const rowsOf = (m, label, sortKeys) => [...m.entries()].sort(sortKeys).map(([k, x]) => ({ cells: [label(k), String(x.n), fmtQty(x.q), x.pq ? peso(x.v) + (x.pq < x.q ? ' *' : '') : ''] }));
+    const totQ = outs.reduce((a, o) => a + o.qty, 0), totV = outs.reduce((a, o) => a + (hasPrice(byId.get(o.itemId).price) ? byId.get(o.itemId).price * o.qty : 0), 0);
+    const note5 = `Units that left the stock (lost, written off, disposed, transferred, corrections). * = some units have no price, so the value is not complete.`;
+    secs.push({ id: 'lossm', title: '5a. Removals by month', note: note5, cols: [{ label: 'Month' }, { label: 'Entries', num: true }, { label: 'Units', num: true }, { label: 'Value', num: true }], rows: rowsOf(agg(o => o.date.slice(0, 7)), monthTxt, (a, b) => b[0].localeCompare(a[0])), empty: 'No units were removed in this period.', foot: outs.length ? `Total: ${fmtQty(totQ)} units${totV ? ' · ' + peso(totV) : ''}` : '' });
+    secs.push({ id: 'lossr', title: '5b. Removals by reason', note: '', cols: [{ label: 'Reason' }, { label: 'Entries', num: true }, { label: 'Units', num: true }, { label: 'Value', num: true }], rows: rowsOf(agg(o => o.reason || 'Other'), (k) => k, (a, b) => b[1].q - a[1].q), empty: 'No units were removed in this period.' });
+
+    // 6. data quality
+    const noPrice = live.filter(i => !hasPrice(i.price)), noLoc = live.filter(i => !i.location);
+    const noSer = live.filter(i => hasPrice(i.price) && i.price >= 5000 && !i.serial);
+    const eg = (l) => l.slice(0, 4).map(i => i.name).join(', ') + (l.length > 4 ? ', …' : '');
+    const dq = [];
+    if (noPrice.length) dq.push({ cells: ['No price', String(noPrice.length), eg(noPrice)], go: 'noprice' });
+    if (noLoc.length) dq.push({ cells: ['No storage location', String(noLoc.length), eg(noLoc)], go: 'noloc' });
+    if (noSer.length) dq.push({ cells: ['No serial number (priced ₱5,000 or more)', String(noSer.length), eg(noSer)], go: '' });
+    secs.push({ id: 'dq', title: '6. Data to complete', note: 'Fill these in over time. Nothing is blocked because of them.', cols: [{ label: 'Check' }, { label: 'Tools', num: true }, { label: 'Examples' }], rows: dq, empty: 'Everything is filled in. Well done.' });
+
+    // headline numbers
+    const priced = live.filter(i => hasPrice(i.price));
+    const stockVal = priced.reduce((a, i) => a + i.price * i.stat.onHand, 0);
+    const repairVal = priced.reduce((a, i) => a + i.price * (i.stat.inRepair || 0), 0);
+    const head = [
+      ['Value of tools in stock', priced.length ? peso(stockVal) : '—', `${priced.length} of ${live.length} tools have a price`],
+      ['Out of service now', repairVal ? peso(repairVal) : '—', 'damaged / in repair, priced tools only'],
+      ['Removed in this period', outs.length ? fmtQty(totQ) + (totQ === 1 ? ' unit' : ' units') : '0', totV ? peso(totV) : 'no value'],
+      ['Needs attention', String(att.length), 'overdue, calibration, long repairs']
+    ];
+    return { secs, head, from };
+  }
+
+  function renderInsights() {
+    const { secs, head } = insightsData();
+    const kp = E('div', 'invKpis');
+    head.forEach(([label, big, sub]) => { const k = E('div', 'invKpi tlKpi'); k.append(E('b', '', big), E('span', '', label), E('small', '', sub)); kp.appendChild(k); });
+    body.appendChild(kp);
+    secs.forEach(sc => {
+      const box = E('div'); box.style.margin = '16px 0 8px';
+      const h = E('div', 'invSub', sc.title); h.style.fontWeight = '600'; h.style.fontSize = '14px';
+      box.appendChild(h);
+      if (sc.note) box.appendChild(E('div', 'invNote', sc.note));
+      if (!sc.rows.length) { box.appendChild(E('div', 'invEmpty', sc.empty)); body.appendChild(box); return; }
+      const cols = sc.cols.concat(sc.rows.some(r => r.itemId || r.go) ? [{ label: '' }] : []);
+      const { t, tb } = table(cols);
+      sc.rows.forEach(r => {
+        const tr = E('tr');
+        sc.cols.forEach((c, n) => tr.appendChild(td(c.num ? 'num' : '', r.cells[n])));
+        if (cols.length > sc.cols.length) {
+          const act = td('act');
+          if (r.itemId) act.appendChild(actBtn('Open', 'Open this tool', () => openToolDetail(r.itemId)));
+          if (r.go) act.appendChild(actBtn('Show', 'Show these tools in the Tools tab', () => { tab = 'tools'; F.status = r.go; render(); }));
+          tr.appendChild(act);
+        }
+        tb.appendChild(tr);
+      });
+      box.appendChild(t);
+      if (sc.foot) box.appendChild(E('div', 'invNote', sc.foot));
+      body.appendChild(box);
+    });
+  }
+
+  function insightsReport() {
+    const { secs, head, from } = insightsData();
+    const kp = `<table class="rp"><tbody><tr>${head.map(h => `<td><b>${esc(h[1])}</b><br>${esc(h[0])}<br><small>${esc(h[2])}</small></td>`).join('')}</tr></tbody></table>`;
+    const html = secs.map(sc => `<h2 style="font-size:13px;margin:16px 0 4px">${esc(sc.title)}</h2>${sc.note ? `<p style="font-size:10px;color:#555;margin:0 0 4px">${esc(sc.note)}</p>` : ''}` +
+      (sc.rows.length ? K.rpTable(sc.cols, sc.rows.map(r => '<tr>' + r.cells.map((c, n) => `<td${sc.cols[n].num ? ' class="num"' : ''}>${esc(c)}</td>`).join('') + '</tr>').join('')) + (sc.foot ? `<p style="font-size:10px"><b>${esc(sc.foot)}</b></p>` : '') : `<p style="font-size:10px">${esc(sc.empty)}</p>`)).join('');
+    return { title: 'Tools insights', html: K.reportDoc('Tools & Equipment insights', `${fmtDate(from)} to ${fmtDate(S().today)}`, kp + html + '<div class="sign"><div>Prepared by</div><div>Noted by</div></div>'), landscape: true };
+  }
+
+  // ---------- add / remove / correct units ----------
+  function openUnits(opts) {
+    opts = opts || {};
+    const old = opts.move || null;
+    const dir = old ? old.dir : opts.dir === 'out' ? 'out' : 'in';
+    const out = dir === 'out';
+    const preset = itemById(old ? old.itemId : opts.itemId);
+    const d = dialog(old ? (out ? 'Correct a removal' : 'Correct added units') : out ? 'Remove units from the stock' : 'Add units', {});
+    const item = itemInput('tlUnitList', S().items.filter(i => !i.archived || (old && i.id === old.itemId)), preset);
+    if (old) item.disabled = true;
+    const info = E('div', 'invInfo');
+    const qty = inp('number', old ? String(old.qty) : '1');
+    const date = inp('date', old ? old.date : S().today);
+    const reason = sel(out ? S().toolOutReasons : S().inReasons.filter(x => x !== 'Returned by user'), old && old.reason ? old.reason : out ? '' : S().inReasons[0]);
+    if (out && !old) { const o = document.createElement('option'); o.value = ''; o.textContent = 'Choose a reason…'; reason.insertBefore(o, reason.firstChild); reason.value = ''; }
+    const party = inp('text', old ? old.party : '', { maxLength: 120 });
+    datalist('tlSupList', S().items.map(i => i.supplier));
+    party.setAttribute('list', 'tlSupList');
+    const ref = inp('text', old ? old.ref : '', { maxLength: 60 });
+    const price = inp('number', old && hasPrice(old.price) ? old.price : '');
+    const note = inp('text', old ? old.remarks : '', { maxLength: 500 });
+    const boss = inp('text', old ? old.approvedBy : '', { maxLength: 120 });
+    const showInfo = () => { const it = resolveItem(item.value); info.textContent = it ? `Now in stock: ${fmtQty(it.stat.onHand)} ${it.uom} (${fmtQty(it.stat.available)} available)` : ''; };
+    item.addEventListener('input', showInfo); item.addEventListener('change', showInfo);
+    const c = d.content;
+    c.append(fld('Tool', item), info, grid(fld(out ? 'Units to remove' : 'Units added', qty), fld('Date', date)), fld(out ? 'Why are the units removed?' : 'Reason', reason));
+    if (out) {
+      c.append(E('p', 'invNote', 'Removing units needs permission from the boss. Explain what happened, type the boss\'s name, then the boss types the admin PIN.'));
+      c.append(fld('What happened (required)', note), fld('Approved by (the boss)', boss));
+    } else {
+      c.append(grid(fld('Supplier / from', party), fld('DR / PO no.', ref)), grid(fld('Price per unit, ₱ (optional)', price, 'Becomes the tool\'s current price.'), fld('Remarks (optional)', note)));
+      if (old) c.append(E('p', 'invNote', 'Correcting an entry needs the admin PIN.'));
+    }
+    showInfo();
+    d.button(out ? 'Remove units' : 'Save', 'primary', async () => {
+      const it = old ? itemById(old.itemId) : resolveItem(item.value);
+      if (!it) { d.say('Please pick the tool from the list.', true); return; }
+      if (out && !reason.value) { d.say('Choose why the units are removed.', true); return; }
+      if (out && note.value.trim().length < 5) { d.say('Please explain what happened (a few words).', true); return; }
+      if (out && boss.value.trim().length < 2) { d.say('Type the name of the boss who approved this.', true); return; }
+      if (out && !old && !confirm(`Remove ${qty.value} ${it.uom} of ${it.name} from the stock?\n\nReason: ${reason.value}\nApproved by: ${boss.value || '(not typed)'}\n\nThis is recorded and cannot be deleted without the admin PIN.`)) return;
+      const base = { id: old ? old.id : undefined, itemId: it.id, dir, qty: qty.value, date: date.value, reason: reason.value, party: party.value, ref: ref.value, price: out ? '' : price.value, remarks: note.value, approvedBy: boss.value };
+      const guarded = out || !!old;
+      const r = guarded
+        ? await K.withPin((pin) => api.invMoveSave(Object.assign({}, base, { pin })), `${old ? 'Correct' : out ? 'Remove' : 'Add'} ${qty.value} ${it.uom} of ${it.name}`)
+        : await api.invMoveSave(base);
+      if (r.canceled) return;
+      if (!r.ok) { d.say(r.error, true); return; }
+      useState(r); d.close(); say(out ? 'Units removed and recorded.' : 'Units added and recorded.');
+    });
+    d.button('Cancel', '', d.close);
+    (preset ? qty : item).focus();
   }
 
   // ---------- History tab: lends, returns, repairs and unit changes in one log ----------
@@ -704,7 +1016,7 @@
         td('', r.who), td('', src.ref || ''), td('', r.remarks), td('', src.by || ''));
       const act = td('act');
       if (r.kind === 'event') act.append(actBtn('↩', 'Undo this entry', () => undoFlow(r.x)));
-      else act.append(actBtn('✎', 'Edit this entry', () => K.openMove({ move: Object.assign({}, r.m, { uom: it.uom }) })), document.createTextNode(' '), actBtn('🗑', 'Delete this entry', () => K.deleteMove(Object.assign({}, r.m, { uom: it.uom, itemName: it.name }))));
+      else act.append(actBtn('✎', 'Edit this entry', () => openUnits({ move: r.m })), document.createTextNode(' '), actBtn('🗑', 'Delete this entry', () => K.deleteMove(Object.assign({}, r.m, { uom: it.uom, itemName: it.name }))));
       tr.appendChild(act);
       tb.appendChild(tr);
     });
@@ -719,7 +1031,8 @@
     const p = await api.invEventUndo(payload, true);
     if (!p.ok) { say(p.error); return; }
     if (!confirm('Undo this entry?\n\n' + p.effects.map(x => '• ' + x).join('\n'))) return;
-    const r = await api.invEventUndo(payload, false);
+    const r = await K.withPin((pin) => api.invEventUndo(payload, false, pin), 'Undo: ' + p.effects.join('; '));
+    if (r.canceled) return;
     if (!r.ok) { say(r.error); return; }
     useState(r); say('Undone.');
   }
@@ -746,7 +1059,7 @@
       const it = resolveItem(item.value);
       info.textContent = it ? `Available: ${fmtQty(it.stat.available)} of ${fmtQty(it.stat.onHand)} ${it.uom}${it.stat.inRepair ? ` (${fmtQty(it.stat.inRepair)} damaged)` : ''}` : '';
       pic.innerHTML = '';
-      if (it && it.photo) { const im = document.createElement('img'); im.src = it.photo; im.alt = ''; im.style.cssText = 'height:70px;border-radius:8px;margin:0 0 8px;display:block'; pic.appendChild(im); }
+      if (it && it.photo) { const im = document.createElement('img'); im.src = K.photoSrc(it.photo); im.alt = ''; im.style.cssText = 'height:70px;border-radius:8px;margin:0 0 8px;display:block'; pic.appendChild(im); }
     };
     item.addEventListener('input', showInfo); item.addEventListener('change', showInfo);
     const c = d.content;
@@ -789,49 +1102,90 @@
   }
 
   // "Return a tool" in the top bar: pick from everything that is out
+  // "Return a tool": search the tools that are out (by tool, code, borrower or reference), then press Return
   function pickReturn() {
-    const open = S().loans.filter(l => l.open > 0).sort((a, b) => a.dateOut.localeCompare(b.dateOut));
-    if (!open.length) { say('No tools are out right now.'); return; }
-    const d = dialog('Return a tool');
-    const { t, tb } = table([{ label: '' }, { label: 'Tool' }, { label: 'Qty', num: true }, { label: 'Borrower' }, { label: 'Taken' }, { label: '' }]);
-    open.forEach(l => {
-      const tr = E('tr');
-      tr.append(td('', thumb(itemById(l.itemId))), td('', l.itemName), td('num', fmtQty(l.open)), td('', l.borrower), td('', fmtDate(l.dateOut)));
-      const act = td('act'); act.append(actBtn('Return', 'Return', () => { d.close(); openReturn(l); }));
-      tr.append(act); tb.appendChild(tr);
+    const all = S().loans.filter(l => l.open > 0).sort((a, b) => a.dateOut.localeCompare(b.dateOut));
+    if (!all.length) { say('No tools are out right now.'); return; }
+    const d = dialog('Return a tool', { wide: true });
+    const find = inp('search', '', { placeholder: 'Type a tool, code, borrower or reference…' });
+    find.style.width = '100%';
+    const note = E('div', 'invNote');
+    const box = E('div', 'invList'); box.style.maxHeight = '50vh';
+    d.content.append(find, note, box);
+    const SHOW = 100;
+    const draw = () => {
+      const w = lc(find.value).split(/\s+/).filter(Boolean);
+      const list = all.filter(l => { const hay = lc([l.itemCode, l.itemName, l.borrower, l.location, l.ref].join(' ')); return w.every(x => hay.includes(x)); });
+      const { t, tb } = table([{ label: '' }, { label: 'Code' }, { label: 'Tool' }, { label: 'Qty', num: true }, { label: 'Borrower' }, { label: 'Taken' }, { label: '' }]);
+      list.slice(0, SHOW).forEach(l => {
+        const tr = E('tr');
+        tr.append(td('', thumb(itemById(l.itemId))), td('code', l.itemCode), td('', l.itemName), td('num', fmtQty(l.open)), td('', l.borrower), td('', fmtDate(l.dateOut)));
+        const act = td('act'); act.append(actBtn('Return', 'Return', () => { d.close(); openReturn(l); }));
+        tr.append(act); tb.appendChild(tr);
+      });
+      box.innerHTML = '';
+      box.appendChild(t);
+      if (!list.length) box.appendChild(E('div', 'invEmpty', 'Nothing matches. Check the spelling, or try the borrower\'s name.'));
+      note.textContent = list.length > SHOW ? `Showing the first ${SHOW} of ${list.length} tools that are out. Keep typing to narrow it down.` : `${list.length} of ${all.length} tools that are out.`;
+    };
+    find.addEventListener('input', draw);
+    // Enter (or a barcode scanner) opens the return form when only one is left
+    find.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      const w = lc(find.value).split(/\s+/).filter(Boolean);
+      const list = all.filter(l => { const hay = lc([l.itemCode, l.itemName, l.borrower, l.location, l.ref].join(' ')); return w.every(x => hay.includes(x)); });
+      if (list.length === 1) { d.close(); openReturn(list[0]); }
     });
-    const box = E('div', 'invList'); box.style.maxHeight = '45vh'; box.appendChild(t);
-    d.content.append(box);
+    draw();
     d.button('Close', '', d.close);
+    setTimeout(() => find.focus(), 0);
   }
 
   function openReturn(l) {
-    const d = dialog('Return a tool', { small: true });
+    const d = dialog('Return a tool', {});
     const qty = inp('number', l.open); qty.max = String(l.open);
     const date = inp('date', S().today);
     const cond = sel(S().returnConditions || ['Good', 'Needs repair', 'Damaged', 'Lost'], 'Good');
     const bad = inp('number', l.open); bad.min = '1'; bad.max = String(l.open);
     const badFld = fld('How many are damaged / lost', bad);
     const remarks = inp('text', '', { maxLength: 300 });
+    const by = inp('text', l.borrower, { maxLength: 120 });
+    const recv = inp('text', S().settings.user || S().settings.defaultUser || '', { maxLength: 60 });
+    const byWarn = E('div', 'invInfo');
     const hint = E('div', 'invInfo');
+    const pics = window.DamagePhotos ? window.DamagePhotos.picker([], d.overlay, (m) => d.say(m, !!m)) : null;
+    const picFld = pics ? fld('Photos of the damage (optional)', pics.el, 'Add up to 3 pictures, then use ✏ Mark to circle or point at the damaged part.') : null;
     const sync = () => {
       const ok = cond.value === 'Good';
       badFld.style.display = ok ? 'none' : '';
+      if (picFld) picFld.style.display = ok || cond.value === 'Lost' ? 'none' : '';
+      bossFld.style.display = cond.value === 'Lost' ? '' : 'none';
       hint.textContent = ok ? '' : cond.value === 'Lost'
         ? 'Lost units are removed from stock and kept in the Repairs list.'
         : 'These units stay in stock but cannot be lent until they are repaired or written off in the Repairs tab. Say what happened in Remarks.';
       if (!ok && (!bad.value || Number(bad.value) > Number(qty.value))) bad.value = qty.value;
     };
+    const boss = inp('text', '', { maxLength: 120 });
+    const bossFld = fld('Approved by (the boss) — needed for a lost tool', boss);
+    const same = () => lc(by.value.trim()) === lc(l.borrower.trim());
+    const syncBy = () => { byWarn.textContent = by.value.trim() && !same() ? `Note: this was borrowed by ${l.borrower}, but is being returned by ${by.value.trim()}.` : ''; byWarn.style.color = '#d97706'; };
+    by.addEventListener('input', syncBy);
     cond.addEventListener('change', sync); qty.addEventListener('input', sync);
     const c = d.content;
     const it = itemById(l.itemId);
     const head = E('div', 'invRow'); head.append(thumb(it), E('span', '', `${l.itemName} — ${fmtQty(l.open)} ${l.uom} borrowed by ${l.borrower}`));
     c.append(head);
-    c.append(grid(fld('Quantity returned', qty), fld('Date returned', date)), fld('Condition when returned', cond), badFld, hint, fld('Remarks', remarks));
+    c.append(grid(fld('Quantity returned', qty), fld('Date returned', date)), grid(fld('Returned by', by, 'Who brought it back'), fld('Received by', recv, 'Who checked it in')), byWarn, fld('Condition when returned', cond), badFld, hint, fld('Remarks', remarks), bossFld);
+    if (picFld) c.append(picFld);
     sync();
     d.button('Mark as returned', 'primary', async () => {
       if (cond.value === 'Lost' && !confirm('Mark these units as LOST? They will be removed from your stock count.')) return;
-      const r = await api.invReturn(l.id, { qty: qty.value, date: date.value, condition: cond.value, badQty: bad.value, remarks: remarks.value });
+      if (by.value.trim() && !same() && !confirm(`This tool was borrowed by ${l.borrower}, but is being returned by ${by.value.trim()}.\n\nRecord the return anyway?`)) return;
+      const rb = { qty: qty.value, date: date.value, condition: cond.value, badQty: bad.value, remarks: remarks.value, returnedBy: by.value, receivedBy: recv.value, photos: pics && cond.value !== 'Good' && cond.value !== 'Lost' ? pics.get() : [] };
+      const r = cond.value === 'Lost'
+        ? await K.withPin((pin) => api.invReturn(l.id, Object.assign({}, rb, { approvedBy: boss.value, pin })), `Return as LOST: ${l.itemName}`)
+        : await api.invReturn(l.id, rb);
+      if (r.canceled) return;
       if (!r.ok) { d.say(r.error, true); return; }
       useState(r); d.close();
       say(cond.value === 'Good' ? 'Return recorded.' : 'Return recorded. The damaged units are in the Repairs tab.');
@@ -849,15 +1203,17 @@
       const list = s.items.filter(i => !i.archived).sort((a, b) => lc(a.name).localeCompare(lc(b.name)));
       const cols = [];
       if (withPic) cols.push({ label: 'Picture' });
-      cols.push({ label: 'Code' }, { label: 'Tool' }, { label: 'Type' }, { label: 'Total', num: true }, { label: 'Available', num: true }, { label: 'Borrowed', num: true }, { label: 'Damaged', num: true }, { label: 'Condition' }, { label: 'Location' }, { label: 'Calibration due' });
-      const rows = list.map(i => `<tr>${withPic ? `<td>${i.photo ? `<img src="${esc(i.photo)}" style="height:54px;width:72px;object-fit:cover;border-radius:4px" alt="">` : ''}</td>` : ''}<td>${esc(i.code)}</td><td>${esc(i.name)}${i.serial ? `<br><small>${esc(i.serial)}</small>` : ''}</td><td>${esc(i.group)}</td><td class="num">${fmtQty(i.stat.onHand)}</td><td class="num">${fmtQty(i.stat.available)}</td><td class="num">${i.stat.onLoan ? fmtQty(i.stat.onLoan) : ''}</td><td class="num">${i.stat.inRepair ? fmtQty(i.stat.inRepair) : ''}</td><td>${esc(i.condition)}</td><td>${esc(i.location)}</td><td>${esc(fmtDate(i.calibrationDue))}</td></tr>`).join('');
-      const title = withPic ? 'Tools catalogue' : 'Tools list';
-      return { title, html: K.reportDoc(title, sub(list.length, 'tools'), K.rpTable(cols, rows)), landscape: true };
+      cols.push({ label: 'Code' }, { label: 'Tool' }, { label: 'Type' }, { label: 'Total', num: true }, { label: 'Available', num: true }, { label: 'Borrowed', num: true }, { label: 'Damaged', num: true }, { label: 'Condition' }, { label: 'Location' }, { label: 'Calibration due' }, { label: 'Price', num: true }, { label: 'Value', num: true });
+      const rows = list.map(i => `<tr>${withPic ? `<td>${i.photo ? `<img src="${esc(K.photoSrc(i.photo))}" style="height:54px;width:72px;object-fit:cover;border-radius:4px" alt="">` : ''}</td>` : ''}<td>${esc(i.code)}</td><td>${esc(i.name)}${i.serial ? `<br><small>${esc(i.serial)}</small>` : ''}</td><td>${esc(i.group)}</td><td class="num">${fmtQty(i.stat.onHand)}</td><td class="num">${fmtQty(i.stat.available)}</td><td class="num">${i.stat.onLoan ? fmtQty(i.stat.onLoan) : ''}</td><td class="num">${i.stat.inRepair ? fmtQty(i.stat.inRepair) : ''}</td><td>${esc(i.condition)}</td><td>${esc(i.location)}</td><td>${esc(fmtDate(i.calibrationDue))}</td><td class="num">${esc(pesoOr(i.price))}</td><td class="num">${hasPrice(i.price) ? esc(peso(i.price * i.stat.onHand)) : ''}</td></tr>`).join('');
+      const priced = list.filter(i => hasPrice(i.price));
+      const total = priced.reduce((a, i) => a + i.price * i.stat.onHand, 0);
+      const title = withPic ? 'Tools & Equipment Inventory' : 'Tools list';
+      return { title, html: K.reportDoc(title, sub(list.length, 'tools') + (priced.length ? ` · value ${peso(total)} (${priced.length} of ${list.length} priced)` : ''), K.rpTable(cols, rows)), landscape: true };
     }
     if (kind === 'repairs') {
       const list = s.repairs.filter(r => r.status === 'open').sort((a, b) => a.date.localeCompare(b.date));
       const rows = list.map(r => `<tr><td>${esc(r.itemCode)}</td><td>${esc(r.itemName)}</td><td class="num">${fmtQty(r.qty)} ${esc(r.uom)}</td><td>${esc(r.kind)}</td><td>${esc(fmtDate(r.date))}</td><td>${esc(r.borrower || r.by)}</td><td>${esc(r.note)}</td><td>${daysBetween(r.date, s.today)} d</td></tr>`).join('');
-      return { title: 'Damaged tools', html: K.reportDoc('Damaged tools', sub(list.length, 'out of service'), K.rpTable([{ label: 'Code' }, { label: 'Tool' }, { label: 'Qty', num: true }, { label: 'Problem' }, { label: 'Reported' }, { label: 'Returned by' }, { label: 'Note' }, { label: 'Days' }], rows)), landscape: true };
+      return { title: 'Damaged tools', html: K.reportDoc('Damaged tools', sub(list.length, 'out of service'), K.rpTable([{ label: 'Code' }, { label: 'Tool' }, { label: 'Qty', num: true }, { label: 'Problem' }, { label: 'Reported' }, { label: 'Borrower / reported by' }, { label: 'Note' }, { label: 'Days' }], rows)), landscape: true };
     }
     return K.buildReport('loans');
   }
@@ -866,16 +1222,15 @@
   btnNew.addEventListener('click', () => openTool());
   btnLend.addEventListener('click', () => openCheckout());
   btnReturn.addEventListener('click', pickReturn);
-  btnDamage.addEventListener('click', () => openReport());
   btnPrint.addEventListener('click', (e) => {
     e.stopPropagation();
     const r = btnPrint.getBoundingClientRect();
     const go = (k) => () => K.outputReport(toolsReport(k));
     showMenu({ clientX: r.left, clientY: r.bottom + 2 }, [
-      { label: 'Tools catalogue (with pictures)', run: go('catalogue') },
+      { label: 'Tools & Equipment Inventory (with pictures)', run: go('catalogue') },
       { label: 'Tools list (no pictures)', run: go('list') },
       { label: 'Borrowed tools', run: go('loans') },
-      { label: 'Damaged tools', run: go('repairs') }
+      { label: 'Damaged & missing tools report…', run: () => window.DamagedReport && window.DamagedReport.open() }
     ]);
   });
   btnMore.addEventListener('click', (e) => {
@@ -889,14 +1244,17 @@
       '-',
       { label: 'Form heading (company, department)…', run: () => K.openFormHeading() },
       { label: 'Open data and backups folder', run: () => api.invOpenFolder() },
-      { label: 'Your name (saved on entries)…', run: () => K.askName() }
+      { label: 'Your name (saved on entries)…', run: () => K.askName() },
+      { label: S() && S().pinSet ? 'Admin PIN — change…' : 'Admin PIN — set…', run: () => K.setPinDialog() }
     ]);
   });
   const setLayout = (v) => { layout = v; try { localStorage.setItem('wh-tools-layout', v); } catch (e) {} render(); };
   bCards.addEventListener('click', () => setLayout('cards'));
   bList.addEventListener('click', () => setLayout('list'));
 
-  scan.addEventListener('input', () => { F.text = scan.value; if (S()) renderBody(); });
+  // with thousands of tools, wait a moment after the last key before searching
+  let scanTimer = 0;
+  scan.addEventListener('input', () => { F.text = scan.value; clearTimeout(scanTimer); scanTimer = setTimeout(() => { if (S()) renderBody(); }, 120); });
   scan.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' || !S()) return;
     const v = scan.value.trim();

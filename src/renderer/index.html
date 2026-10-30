@@ -144,7 +144,7 @@
       <button class="navbtn" data-tab="files"><span class="ico">📁</span><span>Files</span></button>
       <button class="navbtn" data-tab="inventory"><span class="ico">📦</span><span>Inventory</span></button>
       <button class="navbtn" data-tab="notes"><span class="ico">📝</span><span>Notes</span></button>
-      <button class="navbtn" data-tab="punch"><span class="ico">🚩</span><span>Punch list</span></button>
+      <button class="navbtn" data-tab="reports"><span class="ico">📑</span><span>Reports</span></button>
       <span class="navSpacer"></span>
       <button class="navact" id="aiBtn" title="Turn the AI on or off"><span class="ico">✨</span><span>AI: on</span></button>
       <button class="navact" id="styleBtn" title="Themes and welcome screen"><span class="ico">🎨</span><span>Style</span></button>
@@ -204,7 +204,9 @@
       <div id="tasksView"></div>
       <div id="inventoryView" hidden></div>
       <div id="notesView" hidden></div>
-      <div id="punchView" hidden></div>
+      <div id="reportsView" hidden>
+        <div id="punchView" hidden></div>
+      </div>
     </div>
   </div>
 
@@ -311,10 +313,13 @@
   <script src="tasks/tasks-ui.js"></script>
   <script src="inventory/inventory-mode.js"></script>
   <script src="inventory/inventory-ui.js"></script>
+  <script src="inventory/damage-photos.js"></script>
   <script src="inventory/tools-ui.js"></script>
   <script src="core/ui-kit.js"></script>
   <script src="notes/notepad-ui.js"></script>
   <script src="punch/punch-ui.js"></script>
+  <script src="reports/damaged-report.js"></script>
+  <script src="reports/reports-ui.js"></script>
   <script src="core/tabs-ui.js"></script>
   <script src="ai/ai-ui.js"></script>
   <script src="core/intro.js"></script>

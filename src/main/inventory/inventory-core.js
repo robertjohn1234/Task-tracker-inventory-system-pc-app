@@ -14,6 +14,8 @@ const CATEGORY_NAMES = CATEGORIES.map(c => c.name);
 const TOOLS = 'Tools & Equipment';
 
 const IN_REASONS = ['Purchase / delivery', 'Returned by user', 'Borrowed from other dept', 'Opening balance', 'Count adjustment', 'Other'];
+// Tools & Equipment: units can only leave the stock for one of these reasons, and the boss must approve (see needApproval)
+const TOOL_OUT_REASONS = ['Lost', 'Written off (damaged beyond repair)', 'Disposed / sold', 'Transferred to another site', 'Correction of a wrong entry'];
 const OUT_REASONS = ['Issued / withdrawn', 'Lent to other dept', 'Transferred out', 'Damaged / lost / expired', 'Count adjustment', 'Other'];
 const CONDITIONS = ['Good', 'Needs repair', 'Under repair', 'Damaged', 'Lost'];
 const RETURN_CONDITIONS = ['Good', 'Needs repair', 'Damaged', 'Lost'];   // what you can pick when a tool comes back
@@ -70,6 +72,13 @@ function emptyData() {
   return { format: FORMAT, version: 1, items: [], movements: [], loans: [], repairs: [], settings: { user: '', formCompany: '', formDept: '', formIssuerMode: 'user', formIssuerName: '', formLogo: '' } };
 }
 
+// a price: a number (two decimals) or null when it is not known. Never required.
+function priceNum(v) {
+  if (v === '' || v == null) return null;
+  const n = Number(String(v).replace(/[,₱\s]/g, ''));
+  return Number.isFinite(n) && n >= 0 && n <= 1e9 ? Math.round(n * 100) / 100 : null;
+}
+
 function cleanItemRecord(r) {
   if (!r || typeof r !== 'object' || typeof r.id !== 'string' || !r.id) return null;
   const code = cleanCode(r.code);
@@ -89,9 +98,11 @@ function cleanItemRecord(r) {
     leadTimeDays: nonNeg(r.leadTimeDays),
     safetyStock: nonNeg(r.safetyStock),
     serial: text(r.serial, 200),
+    price: priceNum(r.price),
     condition: CONDITIONS.includes(r.condition) ? r.condition : '',
     calibrationDue: validDate(r.calibrationDue) ? r.calibrationDue : '',
     photo: cleanPhoto(r.photo),
+    by: text(r.by, 60),
     notes: text(r.notes, 2000),
     archived: !!r.archived,
     src: text(r.src, 40),
@@ -114,8 +125,10 @@ function cleanMoveRecord(r) {
     qty: qty > 0 ? qty : 0,
     date: validDate(r.date) ? r.date : '1970-01-01',
     reason: text(r.reason, 120),
+    approvedBy: text(r.approvedBy, 120),
     party: text(r.party, 120),
     ref: text(r.ref, 80),
+    price: priceNum(r.price),
     remarks: text(r.remarks, 500),
     by: text(r.by, 60),
     formNo: text(r.formNo, 30),
@@ -132,7 +145,7 @@ function cleanLoanRecord(r) {
   const qty = qtyNum(r.qty);
   if (!r.deleted && !(qty > 0 && qty <= MAX_QTY)) return null;
   const returns = (Array.isArray(r.returns) ? r.returns : [])
-    .map((x, n) => ({ id: text(x && x.id, 80) || (String(r.id).slice(0, 60) + ':' + n), date: validDate(x && x.date) ? x.date : '1970-01-01', qty: qtyNum(x && x.qty), remarks: text(x && x.remarks, 300) }))
+    .map((x, n) => ({ id: text(x && x.id, 80) || (String(r.id).slice(0, 60) + ':' + n), date: validDate(x && x.date) ? x.date : '1970-01-01', qty: qtyNum(x && x.qty), remarks: text(x && x.remarks, 300), returnedBy: text(x && x.returnedBy, 120), receivedBy: text(x && x.receivedBy, 60) }))
     .filter(x => x.qty > 0);
   const returnedQty = Math.min(qty > 0 ? qty : 0, returns.reduce((s, x) => s + x.qty, 0));
   return {
@@ -172,6 +185,7 @@ function cleanRepairRecord(r) {
     borrower: text(r.borrower, 120),
     date: validDate(r.date) ? r.date : todayISO(),
     note: text(r.note, 500),
+    photos: cleanPhotoList(r.photos),
     closedDate: validDate(r.closedDate) ? r.closedDate : '',
     closedNote: text(r.closedNote, 300),
     by: text(r.by, 60),
@@ -185,9 +199,28 @@ function cleanRepairRecord(r) {
 // An equipment picture is kept as a small JPEG / PNG / WebP inside the item (data URL), never a path to a file,
 // so it travels with backups and with the file you send to the other PC.
 const MAX_PHOTO = 250000;
+// A picture is either the name of a file in the photos folder (what is stored: "ph-<20 hex>.jpg") or, on its way in
+// from the screen / from a file sent by another PC, a data URL that the Electron side turns into such a file.
+const PHOTO_NAME = /^ph-[0-9a-f]{16,40}\.(jpg|png|webp)$/;
+const PHOTO_DATA = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/;
 function cleanPhoto(v) {
   v = typeof v === 'string' ? v : '';
-  return /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/.test(v) && v.length <= MAX_PHOTO ? v : '';
+  if (PHOTO_NAME.test(v)) return v;
+  return PHOTO_DATA.test(v) && v.length <= MAX_PHOTO ? v : '';
+}
+
+// Photos of the damage (up to 3 per report, each may carry the user's own mark-up). Same rules as cleanPhoto.
+const MAX_DAMAGE_PHOTOS = 3;
+function cleanPhotoList(v) {
+  return Array.isArray(v) ? v.map(cleanPhoto).filter(Boolean).slice(0, MAX_DAMAGE_PHOTOS) : [];
+}
+// null when the list is fine (or not sent), otherwise a fail() result
+function checkPhotoList(v) {
+  if (v === undefined || v === null) return null;
+  if (!Array.isArray(v)) return fail('The photos could not be used.');
+  if (v.length > MAX_DAMAGE_PHOTOS) return fail(`You can add up to ${MAX_DAMAGE_PHOTOS} photos to one damage report.`);
+  if (v.some(x => !cleanPhoto(x))) return fail('One of the photos could not be used. Please choose JPG, PNG or WebP pictures.');
+  return null;
 }
 
 // A logo is kept as a small picture inside the settings (data URL), never a path to a file.
@@ -286,6 +319,7 @@ function saveItem(data, input, by) {
   if (!old && input.startQty !== '' && input.startQty != null && !(qtyNum(input.startQty) >= 0)) {
     return fail('The starting quantity must be a number, zero or more.');
   }
+  if (input.price !== undefined && input.price !== '' && input.price != null && priceNum(input.price) === null) return fail('The price must be a number, zero or more.');
   if (input.calibrationDue && !validDate(input.calibrationDue)) return fail('The calibration date is not a valid date.');
   // the picture: keep the old one unless a new one (or an empty one, meaning "remove") was sent
   let photo = old ? old.photo : '';
@@ -302,9 +336,10 @@ function saveItem(data, input, by) {
     id: old ? old.id : uid(), code, name, category,
     group: input.group, uom, location: input.location, supplier: input.supplier, barcode: input.barcode,
     minQty: input.minQty, reorderQty: input.reorderQty, leadTimeDays: input.leadTimeDays, safetyStock: input.safetyStock,
-    serial: input.serial, condition: input.condition, calibrationDue: input.calibrationDue, photo,
+    serial: input.serial, price: input.price !== undefined ? input.price : (old ? old.price : null), condition: input.condition, calibrationDue: input.calibrationDue, photo,
     notes: input.notes, archived: input.archived,
     formNo: old ? old.formNo : '',
+    by: old ? old.by : text(by, 60),
     src: old ? old.src : '', createdAt: old ? old.createdAt : now, updatedAt: now, deleted: false
   });
 
@@ -333,6 +368,14 @@ function deleteItem(data, id) {
   return { ok: true };
 }
 
+// Removing tools from the stock needs the boss: a reason, a note about what happened and the name of the person who approved it.
+// (The admin PIN itself is checked on the Electron side, see inventory.js.)
+function needApproval(input, noteText) {
+  if (text(noteText, 500).length < 5) return fail('Please explain what happened (at least a few words).', { code: 'NOTE' });
+  if (text(input && input.approvedBy, 120).length < 2) return fail('Type the name of the boss who approved this.', { code: 'APPROVER' });
+  return null;
+}
+
 // ---------- movements ----------
 function addMovement(data, input, by, opts) {
   opts = opts || {};
@@ -349,6 +392,13 @@ function addMovement(data, input, by, opts) {
 
   const old = input.id ? data.movements.find(m => m.id === input.id && !m.deleted) : null;
   if (input.id && !old) return fail('That entry no longer exists.');
+
+  if (dir === 'in' && it.category === TOOLS && input.price !== undefined && input.price !== '' && input.price != null && priceNum(input.price) === null) return fail('The price must be a number, zero or more.');
+  if (dir === 'out' && it.category === TOOLS) {
+    if (!TOOL_OUT_REASONS.includes(input.reason)) return fail('Choose why the units are being removed.', { code: 'REASON' });
+    const bad = needApproval(input, input.remarks);
+    if (bad) return bad;
+  }
 
   const bal = balanceOf(data, it.id, old && old.id);
   const loaned = onLoanOf(data, it.id);
@@ -368,11 +418,13 @@ function addMovement(data, input, by, opts) {
   const rec = cleanMoveRecord({
     id: old ? old.id : uid(), itemId: it.id, dir, qty, date,
     reason: input.reason || (dir === 'in' ? IN_REASONS[0] : OUT_REASONS[0]),
-    party: input.party, ref: input.ref, remarks: input.remarks, by: text(by, 60),
+    party: input.party, ref: input.ref, price: dir === 'in' && it.category === TOOLS ? input.price : null, remarks: input.remarks, by: text(by, 60), approvedBy: dir === 'out' && it.category === TOOLS ? input.approvedBy : '',
     src: old ? old.src : '', createdAt: old ? old.createdAt : now, updatedAt: now, deleted: false
   });
   if (old) data.movements[data.movements.indexOf(old)] = rec;
   else data.movements.push(rec);
+  // a purchase price typed with new units becomes the tool's current value (the latest price wins)
+  if (dir === 'in' && it.category === TOOLS && rec.price != null && !old) { it.price = rec.price; it.updatedAt = now; }
   return { ok: true, movement: rec, onHand: Math.round(after * 1000) / 1000 };
 }
 
@@ -478,8 +530,13 @@ function returnLoan(data, id, input, by) {
   const date = input.date ? input.date : todayISO();
   if (!validDate(date)) return fail('The date is not valid.');
   if (date < l.dateOut) return fail('The return date cannot be before the date it was taken.');
+  const badPhotos = RETURN_CONDITIONS.includes(input.condition) && input.condition !== 'Good' ? checkPhotoList(input.photos) : null;
+  if (badPhotos) return badPhotos;
+  const noApproval = input.condition === 'Lost' ? needApproval(input, input.remarks) : null;
+  if (noApproval) return noApproval;
   const retId = uid();
-  l.returns.push({ id: retId, date, qty, remarks: text(input.remarks, 300) });
+  // who brought it back (the borrower unless someone else did) and who checked it in
+  l.returns.push({ id: retId, date, qty, remarks: text(input.remarks, 300), returnedBy: text(input.returnedBy, 120) || l.borrower, receivedBy: text(input.receivedBy, 60) || text(by, 60) });
   l.returnedQty = Math.min(l.qty, Math.round(l.returns.reduce((s, x) => s + x.qty, 0) * 1000) / 1000);
   l.updatedAt = nowISO();
   l.by = text(by, 60) || l.by;
@@ -490,18 +547,18 @@ function returnLoan(data, id, input, by) {
       let bad = input.badQty === '' || input.badQty == null ? qty : qtyNum(input.badQty);
       if (!(bad > 0)) bad = qty;
       bad = Math.min(bad, qty);
-      logProblem(data, it, { kind: cond, qty: bad, date, note: input.remarks, loanId: l.id, returnId: retId, borrower: l.borrower }, by);
+      logProblem(data, it, { kind: cond, qty: bad, date, note: input.remarks, photos: input.photos, approvedBy: input.approvedBy, loanId: l.id, returnId: retId, borrower: l.borrower }, by);
     }
   }
   return { ok: true, loan: l };
 }
 
 // ---------- damaged / lost tools ----------
-function stockOut(data, it, qty, date, remarks, by, reason, repairId) {
+function stockOut(data, it, qty, date, remarks, by, reason, repairId, approvedBy) {
   const now = nowISO();
   data.movements.push(cleanMoveRecord({
     id: uid(), itemId: it.id, dir: 'out', qty, date, reason: reason || 'Damaged / lost / expired',
-    remarks, by: text(by, 60), repairId: repairId || '', createdAt: now, updatedAt: now
+    remarks, by: text(by, 60), approvedBy: text(approvedBy, 120), repairId: repairId || '', createdAt: now, updatedAt: now
   }));
 }
 
@@ -519,10 +576,10 @@ function logProblem(data, it, x, by) {
   const lost = x.kind === 'Lost';
   const rec = cleanRepairRecord({
     id: uid(), itemId: it.id, qty: x.qty, kind: x.kind, status: lost ? 'lost' : 'open', loanId: x.loanId, returnId: x.returnId, borrower: x.borrower,
-    date: x.date, note: x.note, closedDate: lost ? x.date : '', closedNote: lost ? 'Lost, removed from stock' : '', by: text(by, 60), createdAt: now, updatedAt: now
+    date: x.date, note: x.note, photos: x.photos, closedDate: lost ? x.date : '', closedNote: lost ? 'Lost, removed from stock' : '', by: text(by, 60), createdAt: now, updatedAt: now
   });
   data.repairs.push(rec);
-  if (lost) stockOut(data, it, x.qty, rec.date, 'Lost' + (x.borrower ? ' by ' + x.borrower : '') + (x.note ? ': ' + x.note : ''), by, '', rec.id);
+  if (lost) stockOut(data, it, x.qty, rec.date, 'Lost' + (x.borrower ? ' by ' + x.borrower : '') + (x.note ? ': ' + x.note : ''), by, 'Lost', rec.id, x.approvedBy);
   syncCondition(data, it);
   return rec;
 }
@@ -540,7 +597,9 @@ function reportProblem(data, input, by) {
   if (!validDate(date)) return fail('The date is not valid.');
   const free = balanceOf(data, it.id) - onLoanOf(data, it.id) - inRepairOf(data, it.id);
   if (qty > free) return fail(`Only ${Math.max(0, free)} ${it.uom} are in the store and in good order. Borrowed tools are reported when they are returned.`);
-  const rec = logProblem(data, it, { kind, qty, date, note: input.note }, by);
+  const bad = checkPhotoList(input.photos) || (kind === 'Lost' ? needApproval(input, input.note) : null);
+  if (bad) return bad;
+  const rec = logProblem(data, it, { kind, qty, date, note: input.note, photos: input.photos, approvedBy: input.approvedBy }, by);
   return { ok: true, repair: rec };
 }
 
@@ -555,14 +614,21 @@ function updateRepair(data, id, input, by) {
   const now = nowISO();
   if (input.action === 'delete') {
     r.deleted = true; r.updatedAt = now;
+  } else if (input.action === 'photos') {
+    // add / replace the damage photos of an entry at any time (also after it is closed)
+    const bad = checkPhotoList(input.photos);
+    if (bad) return bad;
+    r.photos = cleanPhotoList(input.photos); r.updatedAt = now;
   } else if (r.status !== 'open') {
     return fail('This entry is already closed.');
   } else if (input.action === 'fixed') {
     r.status = 'fixed'; r.closedDate = date; r.closedNote = text(input.note, 300); r.updatedAt = now;
   } else if (input.action === 'scrap') {
     if (!it) return fail('The item no longer exists.');
+    const bad = needApproval(input, input.note);
+    if (bad) return bad;
     r.status = 'scrapped'; r.closedDate = date; r.closedNote = text(input.note, 300); r.updatedAt = now;
-    stockOut(data, it, r.qty, date, 'Written off after damage' + (input.note ? ': ' + text(input.note, 200) : ''), by, '', r.id);
+    stockOut(data, it, r.qty, date, 'Written off after damage' + (input.note ? ': ' + text(input.note, 200) : ''), by, 'Written off (damaged beyond repair)', r.id, input.approvedBy);
   } else {
     return fail('Unknown action.');
   }
@@ -577,7 +643,7 @@ function buildEvents(data) {
     if (l.deleted || !liveItem(data, l.itemId)) continue;
     ev.push({ key: 'lend:' + l.id, type: 'lend', id: l.id, itemId: l.itemId, date: l.dateOut, qty: l.qty, who: l.borrower, ref: l.ref, remarks: l.remarks, by: l.by, formNo: l.formNo, createdAt: l.createdAt });
     for (const x of l.returns) {
-      ev.push({ key: 'return:' + x.id, type: 'return', id: l.id, returnId: x.id, itemId: l.itemId, date: x.date, qty: x.qty, who: l.borrower, ref: l.ref, remarks: x.remarks, by: l.by, createdAt: x.date + 'T23:59' });
+      ev.push({ key: 'return:' + x.id, type: 'return', id: l.id, returnId: x.id, itemId: l.itemId, date: x.date, qty: x.qty, who: x.returnedBy || l.borrower, ref: l.ref, remarks: [x.remarks, x.receivedBy ? 'Received by ' + x.receivedBy : ''].filter(Boolean).join(' · '), by: l.by, createdAt: x.date + 'T23:59' });
     }
   }
   for (const r of data.repairs || []) {
@@ -829,9 +895,9 @@ function setMinLevels(data, rows) {
 
 module.exports = {
   clearData, setMinLevels,
-  CATEGORIES, CATEGORY_NAMES, TOOLS, IN_REASONS, OUT_REASONS, CONDITIONS, FORMAT,
+  CATEGORIES, CATEGORY_NAMES, TOOLS, IN_REASONS, OUT_REASONS, TOOL_OUT_REASONS, CONDITIONS, FORMAT,
   uid, nowISO, todayISO, validDate, addDays, daysBetween, text, qtyNum, normName, cleanCode,
-  emptyData, normalizeData, cleanLogo, cleanItemRecord, cleanPhoto, cleanMoveRecord, cleanLoanRecord, cleanRepairRecord,
+  emptyData, normalizeData, cleanLogo, cleanItemRecord, cleanPhoto, PHOTO_NAME, PHOTO_DATA, cleanPhotoList, MAX_DAMAGE_PHOTOS, cleanMoveRecord, cleanLoanRecord, cleanRepairRecord,
   nextCode, balanceOf, onLoanOf, inRepairOf, liveItem, RETURN_CONDITIONS, BAD_KINDS,
   saveItem, deleteItem, addMovement, addMovementsBulk, assignForm, deleteMovement, checkout, returnLoan, reportProblem, updateRepair, buildEvents, undoEvent, deleteLoan,
   computeStats, summary, snapshot, mergeData

@@ -40,7 +40,7 @@ const MAP = {
   'tasks-ui.js': `${REN}/tasks`,
   'inventory-mode.js': `${REN}/inventory`, 'inventory-ui.js': `${REN}/inventory`, 'tools-ui.js': `${REN}/inventory`,
   'notepad-ui.js': `${REN}/notes`,
-  'punch-ui.js': `${REN}/punch`,
+  'punch-ui.js': `${REN}/punch`, 'reports-ui.js': `${REN}/reports`, 'damaged-report.js': `${REN}/reports`, 'damage-photos.js': `${REN}/inventory`,
   'ai-ui.js': `${REN}/ai`,
   // ---- not used by the app any more (kept so nothing is lost; delete when you are ready)
   'chat.js': '_unused', 'chat-ui.js': '_unused'

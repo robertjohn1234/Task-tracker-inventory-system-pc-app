@@ -370,6 +370,7 @@
     try { const s = await window.api.invLoad(); settings = (s && s.state && s.state.settings) || {}; } catch (e) {}
     draw();
   }
-  WH.registerTab('punch', view, load);
+  // The Reports tab (reports/reports-ui.js) shows this screen and calls PunchUI.load() each time it is opened.
+  window.PunchUI = { load };
   window.__punchBuild = buildHtml; // used by the self-test
 })();

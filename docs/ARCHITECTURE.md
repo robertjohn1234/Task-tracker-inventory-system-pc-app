@@ -16,6 +16,7 @@ src/
     core/                shared UI: theme, intro, tabs, UI kit
     files/ tasks/ notes/ punch/ ai/
     inventory/           inventory-mode (switch), inventory-ui (Consumables), tools-ui (Tools & Equipment)
+    reports/             reports-ui (the Reports tab), damaged-report (damaged & missing tools report)
 assets/                  icons and images
 tests/                   automated tests (node:test)
 tools/                   organize.js (one-time), check.js (npm run check)
@@ -44,7 +45,19 @@ The name links them: `window.api.invLoad` (preload) ⇄ channel `inv-load` (engi
 - `inventory-ui.js` = Consumables screen. It also exports `window.InvKit` (shared dialogs and helpers).
 - `tools-ui.js` = Tools & Equipment screen; it only uses `window.InvKit` and `window.api`.
 - New tool items require a picture (`REQUIRE_PHOTO` in `tools-ui.js`, and the rule in `saveItem`).
-  Pictures are small JPEG data-URLs stored in the item record, so backups and sync carry them.
+  Pictures are small files in `<data folder>/inventory/photos/` named after their content (`ph-<20 hex>.jpg`, the same picture is stored once).
+  The data file only holds the file name. The screens show them through `InvKit.photoSrc()` (a `file://` link, lazy-loaded).
+  The main process turns new data-URL pictures into files (`photoToFile` / `migratePhotos` in `inventory.js`); old data is converted on the first start.
+  Backups copy only the JSON, so copy the `photos` folder too when moving to another PC. The Send / receive file (.whinv) carries the pictures inside it.
+
+## Reports tab
+
+`reports-ui.js` owns the tab and its sub-tabs. A report section registers itself:
+`Reports.register({ id, label, el, onShow })` (see the top of `reports-ui.js`). The punch list screen
+(`punch/punch-ui.js`) sits inside it and is opened with `PunchUI.load()`.
+`DamagedReport.open(state?)` builds the damaged & missing tools report; it is also used by the
+Repairs tab in Tools & Equipment. To add a report: write `reports/<name>-report.js`, add its `<script>`
+before `reports-ui.js`, and register a section.
 
 ## Conventions
 
@@ -71,3 +84,20 @@ The name links them: `window.api.invLoad` (preload) ⇄ channel `inv-load` (engi
 
 Inventory ledger (JSON), backups folder, settings. `.whinv` is the export used to sync two PCs;
 merge keeps the newest `updatedAt` per record.
+
+## Records, Removed and the admin PIN (Tools & Equipment)
+
+- **Records** tab = every new tool and every added unit (supplier, DR / PO number). **Removed** tab = every unit that left the stock (reason, what happened, who approved), with Print / PDF for the boss to sign.
+- Removing tool units is only possible with a fixed reason (`TOOL_OUT_REASONS` in `inventory-core.js`), a written explanation and an "Approved by" name. The core checks these (`needApproval`).
+- The **admin PIN** is checked in the main process only (`needPin` in `inventory.js`): salted scrypt hash in `<data folder>/inventory/admin-pin.json`, 5 wrong tries = 5 minute lock, every attempt written to `audit.log`.
+  It guards: removing / correcting tool units, deleting tool stock entries, Lost (report or return), write-off, undoing entries that took stock out, and clear-all.
+- The renderer asks the main process first without a PIN; the answer code (`NO_PIN`, `PIN`, `PIN_WRONG`, `PIN_LOCKED`) makes `InvKit.withPin()` show the right dialog and retry.
+- It is a deterrent, not real security: the data is a plain JSON file on the PC. Forgot the PIN: close the app, delete `admin-pin.json`, set a new one.
+
+## Price and the Insights tab (Tools & Equipment)
+
+- `price` is optional everywhere: on the tool (price per unit) and on added units (the purchase price; the latest purchase price becomes the tool's price). `null` = not known; nothing is ever blocked for a missing price.
+  Totals always say how many tools are priced. The Tools filter has "Missing price" and "Missing location".
+- The **Insights** tab (`insightsData()` in `tools-ui.js`) works only from data already in the app: needs attention, problem tools, borrowers to follow up,
+  idle tools (90 days, `IDLE_DAYS`), always-out tools, removals by month / reason, and data to complete. The same sections feed the on-screen tables and the Print / PDF.
+  A tool that was never lent counts its idle days from the day it was created in the app.

@@ -4,7 +4,7 @@
   const nav = document.getElementById('nav');
   if (!nav || !window.WH) return;
   const KEY = 'whHiddenTabs';
-  const NAMES = { tasks: '✅ Tasks', files: '📁 Files', inventory: '📦 Inventory', notes: '📝 Notes', punch: '🚩 Punch list' };
+  const NAMES = { tasks: '✅ Tasks', files: '📁 Files', inventory: '📦 Inventory', notes: '📝 Notes', reports: '📑 Reports' };
 
   const read = () => { try { const v = JSON.parse(localStorage.getItem(KEY) || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; } };
   const write = (v) => { try { localStorage.setItem(KEY, JSON.stringify(v)); } catch (e) {} };

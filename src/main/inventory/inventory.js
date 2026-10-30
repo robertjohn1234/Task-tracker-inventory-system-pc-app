@@ -5,7 +5,9 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { dialog, shell, BrowserWindow } = require('electron');
+const crypto = require('crypto');
+const { pathToFileURL } = require('url');
+const { dialog, shell, BrowserWindow, app: electronApp } = require('electron');
 const core = require('./inventory-core');
 const imp = require('./inventory-import');
 
@@ -15,6 +17,9 @@ function registerInventory(ipcMain, ctx) {
   const dir = () => path.join(ctx.userDataDir(), 'inventory');
   const file = () => path.join(dir(), 'inventory.json');
   const backupDir = () => path.join(dir(), 'backups');
+  const photosDir = () => path.join(dir(), 'photos');
+  const pinFile = () => path.join(dir(), 'admin-pin.json');
+  const auditFile = () => path.join(dir(), 'audit.log');
 
   let data = null;
   let uiScope = 'consumables';   // which screen is open: 'consumables' (everything except tools), 'tools' or 'all'
@@ -57,6 +62,110 @@ function registerInventory(ipcMain, ctx) {
     return null;
   }
 
+  // ---------- the admin PIN (one PIN, kept by the boss) ----------
+  // Removing tools from the stock, writing off or losing a tool, undoing such an entry and clearing all data ask for it.
+  // It is stored as a salted hash in its own file (not in the inventory data, so a file from another PC cannot change it).
+  // Forgot it? The boss / IT deletes admin-pin.json in the data folder, then sets a new one.
+  const readPin = () => { try { const p = JSON.parse(fs.readFileSync(pinFile(), 'utf8')); return p && p.salt && p.hash ? p : null; } catch (e) { return null; } };
+  const hashPin = (pin, salt) => crypto.scryptSync(String(pin), salt, 32).toString('hex');
+  const pinOk = (pin) => /^[0-9]{4,10}$/.test(String(pin == null ? '' : pin));
+  let pinFails = 0, pinLockedUntil = 0;
+  function audit(what, result) {
+    try { fs.mkdirSync(dir(), { recursive: true }); fs.appendFileSync(auditFile(), `${new Date().toISOString()}\t${who()}\t${what}\t${result}\n`); } catch (e) {}
+  }
+  // A PIN file made with  node tools/make-pin.js 1234  can be put next to the app (or in the project folder).
+  // The first time the app runs with no PIN set, it copies that file into its data folder and deletes the original.
+  // This happens only once per PC (admin-pin.seeded), so it can never replace a PIN later, and deleting admin-pin.json to reset a forgotten PIN is not undone.
+  let seedChecked = false;
+  function ensureSeed() {
+    if (seedChecked) return;
+    seedChecked = true;
+    try {
+      const marker = path.join(dir(), 'admin-pin.seeded');
+      if (readPin() || fs.existsSync(marker)) return;
+      let dirs = [];
+      if (typeof ctx.seedDirs === 'function') dirs = ctx.seedDirs();
+      else if (electronApp && electronApp.getAppPath) dirs = [electronApp.isPackaged ? path.dirname(process.execPath) : electronApp.getAppPath(), process.cwd()];
+      for (const d of dirs) {
+        const src = path.join(d, 'admin-pin.json');
+        let p = null;
+        try { p = JSON.parse(fs.readFileSync(src, 'utf8')); } catch (e) { continue; }
+        if (!p || !/^[0-9a-f]{32}$/.test(String(p.salt)) || !/^[0-9a-f]{64}$/.test(String(p.hash))) continue;
+        fs.mkdirSync(dir(), { recursive: true });
+        fs.writeFileSync(pinFile(), JSON.stringify({ salt: p.salt, hash: p.hash, setAt: new Date().toISOString(), from: 'file' }));
+        fs.writeFileSync(marker, new Date().toISOString());
+        try { fs.unlinkSync(src); } catch (e) {}
+        audit('Admin PIN picked up from a PIN file', 'ok');
+        return;
+      }
+    } catch (e) {}
+  }
+  // null = allowed, otherwise the answer to send back. `what` says what is being approved (written to audit.log).
+  function needPin(pin, what) {
+    ensureSeed();
+    const p = readPin();
+    if (!p) return { ok: false, code: 'NO_PIN', error: 'The admin PIN has not been set yet. The boss sets it once (More → Admin PIN).' };
+    if (Date.now() < pinLockedUntil) return { ok: false, code: 'PIN_LOCKED', error: `Too many wrong PINs. Try again in ${Math.ceil((pinLockedUntil - Date.now()) / 60000)} minute(s).` };
+    if (pin == null || pin === '') return { ok: false, code: 'PIN', error: 'The admin PIN is needed. Ask the boss.' };
+    const a = Buffer.from(hashPin(pin, p.salt), 'hex'), b = Buffer.from(p.hash, 'hex');
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      audit(what, 'WRONG PIN');
+      if (++pinFails >= 5) { pinFails = 0; pinLockedUntil = Date.now() + 5 * 60000; audit('PIN locked for 5 minutes', 'too many wrong PINs'); }
+      return { ok: false, code: 'PIN_WRONG', error: 'That PIN is not correct.' };
+    }
+    pinFails = 0;
+    audit(what, 'approved');
+    return null;
+  }
+  const without = (o, key) => { const c = Object.assign({}, o); delete c[key]; return c; };
+  const itemName = (itemId) => { const it = load().items.find(i => i.id === itemId); return it ? it.name : ''; };
+  const isTool = (itemId) => { const it = load().items.find(i => i.id === itemId && !i.deleted); return !!it && it.category === core.TOOLS; };
+
+  // ---------- pictures: one small file each (not inside the data file), named after their content ----------
+  // The data file only holds the file name, so thousands of tools stay fast. The same picture used twice is stored once.
+  function photoToFile(v) {
+    const m = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+\/=]+)$/.exec(typeof v === 'string' ? v : '');
+    if (!m) return v;
+    const buf = Buffer.from(m[2], 'base64');
+    const name = 'ph-' + crypto.createHash('sha1').update(buf).digest('hex').slice(0, 20) + '.' + (m[1] === 'jpeg' ? 'jpg' : m[1]);
+    const f = path.join(photosDir(), name);
+    if (!fs.existsSync(f)) {
+      fs.mkdirSync(photosDir(), { recursive: true });
+      fs.writeFileSync(f + '.tmp', buf);
+      fs.renameSync(f + '.tmp', f);
+    }
+    return name;
+  }
+  function photoToData(name) {
+    if (!core.PHOTO_NAME.test(String(name))) return '';
+    try {
+      const ext = String(name).split('.').pop();
+      return `data:image/${ext === 'jpg' ? 'jpeg' : ext};base64,` + fs.readFileSync(path.join(photosDir(), name)).toString('base64');
+    } catch (e) { return ''; }
+  }
+  // turns any picture that is still a data URL (old data, a file from the other PC, a new picture) into a file; true when something changed
+  function migratePhotos(d) {
+    let changed = false;
+    const one = (v) => { const n = photoToFile(v); if (n !== v) changed = true; return n; };
+    for (const i of d.items) if (i.photo && i.photo.startsWith('data:')) i.photo = one(i.photo);
+    for (const r of d.repairs || []) if (Array.isArray(r.photos) && r.photos.some(p => p.startsWith('data:'))) r.photos = r.photos.map(one);
+    return changed;
+  }
+  // pictures nobody uses any more (a replaced picture, a deleted tool) are removed after 90 days
+  function sweepPhotos(d) {
+    try {
+      const used = new Set();
+      d.items.forEach(i => i.photo && used.add(i.photo));
+      (d.repairs || []).forEach(r => (r.photos || []).forEach(p => used.add(p)));
+      const limit = Date.now() - 90 * 86400000;
+      for (const f of fs.readdirSync(photosDir())) {
+        if (!core.PHOTO_NAME.test(f) || used.has(f)) continue;
+        const fp = path.join(photosDir(), f);
+        if (fs.statSync(fp).mtimeMs < limit) fs.unlinkSync(fp);
+      }
+    } catch (e) {}
+  }
+
   function load() {
     if (data) return data;
     try {
@@ -70,6 +179,7 @@ function registerInventory(ipcMain, ctx) {
         data = core.emptyData();
       }
     }
+    try { if (migratePhotos(data)) save(); sweepPhotos(data); } catch (e) { /* keep the pictures inside the data until it works */ }
     return data;
   }
 
@@ -84,6 +194,7 @@ function registerInventory(ipcMain, ctx) {
 
   // ---------- what the screens need ----------
   function state(scope) {
+    ensureSeed();
     scope = scope || uiScope;
     const d = load();
     const today = core.todayISO();
@@ -104,15 +215,15 @@ function registerInventory(ipcMain, ctx) {
     return {
       today, scope, items, movements, loans, repairs, events, summary: core.summary({ items: items }, stats, today),
       settings: { user: d.settings.user || '', defaultUser: who(), formCompany: d.settings.formCompany || '', formDept: d.settings.formDept || '', formIssuerMode: d.settings.formIssuerMode || 'user', formIssuerName: d.settings.formIssuerName || '', formLogo: d.settings.formLogo || '' },
-      categories: core.CATEGORIES.filter(c => scope === 'all' || ((c.name === core.TOOLS) === (scope === 'tools'))), inReasons: core.IN_REASONS, outReasons: core.OUT_REASONS, conditions: core.CONDITIONS, returnConditions: core.RETURN_CONDITIONS,
-      folder: dir()
+      categories: core.CATEGORIES.filter(c => scope === 'all' || ((c.name === core.TOOLS) === (scope === 'tools'))), inReasons: core.IN_REASONS, outReasons: core.OUT_REASONS, toolOutReasons: core.TOOL_OUT_REASONS, conditions: core.CONDITIONS, returnConditions: core.RETURN_CONDITIONS,
+      pinSet: !!readPin(), folder: dir(), photoBase: pathToFileURL(photosDir()).href + '/'
     };
   }
 
   function mutate(fn) {
     const d = load();
     const r = fn(d);
-    if (r && r.ok) { save(); r.state = state(); }
+    if (r && r.ok) { migratePhotos(d); save(); r.state = state(); }
     return r;
   }
 
@@ -125,18 +236,83 @@ function registerInventory(ipcMain, ctx) {
     uiScope = scope === 'tools' ? 'tools' : 'consumables';
     return { ok: true, state: state() };
   });
+  // the mark-up editor needs the real picture data (a canvas cannot be drawn from a file link and then saved)
+  // set or change the admin PIN: 4 to 10 digits. Changing it needs the old one.
+  handle('inv-pin-set', (e, oldPin, newPin) => {
+    const cur = readPin();
+    if (cur) { const g = needPin(oldPin, 'Change the admin PIN'); if (g) return g; }
+    if (!pinOk(newPin)) return { ok: false, error: 'The PIN must be 4 to 10 digits (numbers only).' };
+    const salt = crypto.randomBytes(16).toString('hex');
+    fs.mkdirSync(dir(), { recursive: true });
+    fs.writeFileSync(pinFile(), JSON.stringify({ salt, hash: hashPin(newPin, salt), setAt: new Date().toISOString() }));
+    audit(cur ? 'Admin PIN changed' : 'Admin PIN set', 'ok');
+    return { ok: true, state: state() };
+  });
+  handle('inv-photo-data', (e, names) => {
+    const out = {};
+    (Array.isArray(names) ? names : [names]).slice(0, 20).forEach(n => { const v = photoToData(n); if (v) out[n] = v; });
+    return { ok: true, photos: out };
+  });
   handle('inv-item-save', (e, input) => mutate(d => core.saveItem(d, input, who())));
   handle('inv-item-delete', (e, id) => mutate(d => core.deleteItem(d, id)));
-  handle('inv-move-save', (e, input, opts) => mutate(d => core.addMovement(d, input, who(), { allowNegative: !!(opts && opts.allowNegative) })));
-  handle('inv-move-bulk', (e, rows, opts) => mutate(d => core.addMovementsBulk(d, rows, who(), { allowNegative: !!(opts && opts.allowNegative) })));
+  // tools: adding units is free; changing an entry or taking units out needs the PIN
+  handle('inv-move-save', (e, input, opts) => {
+    input = input || {};
+    if (isTool(input.itemId) && (input.id || input.dir === 'out')) {
+      const g = needPin(input.pin, `${input.id ? 'Change' : 'Remove'} ${input.qty} unit(s) of ${itemName(input.itemId)} — ${input.reason || ''}`);
+      if (g) return g;
+    }
+    return mutate(d => core.addMovement(d, without(input, 'pin'), who(), { allowNegative: !!(opts && opts.allowNegative) }));
+  });
+  handle('inv-move-bulk', (e, rows, opts) => {
+    rows = Array.isArray(rows) ? rows : [];
+    if (rows.some(r => r && isTool(r.itemId) && (r.id || r.dir === 'out'))) {
+      const g = needPin(opts && opts.pin, `Remove units of tools (${rows.length} line(s))`);
+      if (g) return g;
+    }
+    return mutate(d => core.addMovementsBulk(d, rows, who(), { allowNegative: !!(opts && opts.allowNegative) }));
+  });
   handle('inv-form-assign', (e, moveIds, loanIds) => mutate(d => core.assignForm(d, moveIds, loanIds, core.todayISO())));
-  handle('inv-move-delete', (e, id) => mutate(d => core.deleteMovement(d, id)));
+  handle('inv-move-delete', (e, id, force, pin) => {
+    const m = load().movements.find(x => x.id === id && !x.deleted);
+    if (m && isTool(m.itemId)) {
+      const g = needPin(pin, `Delete stock entry (${m.dir} ${m.qty}) of ${itemName(m.itemId)}`);
+      if (g) return g;
+    }
+    return mutate(d => core.deleteMovement(d, id));
+  });
   handle('inv-checkout', (e, input) => mutate(d => core.checkout(d, input, who())));
-  handle('inv-return', (e, id, input) => mutate(d => core.returnLoan(d, id, input, who())));
-  handle('inv-repair-report', (e, input) => mutate(d => core.reportProblem(d, input, who())));
-  handle('inv-repair-update', (e, id, input) => mutate(d => core.updateRepair(d, id, input, who())));
-  handle('inv-event-undo', (e, ev, dry) => {
-    if (dry) { const r = core.undoEvent(load(), ev, { dryRun: true }); return r; }
+  handle('inv-return', (e, id, input) => {
+    input = input || {};
+    if (input.condition === 'Lost') {
+      const l = load().loans.find(x => x.id === id);
+      const g = needPin(input.pin, `Return as LOST: ${l ? itemName(l.itemId) : ''}`);
+      if (g) return g;
+    }
+    return mutate(d => core.returnLoan(d, id, without(input, 'pin'), who()));
+  });
+  handle('inv-repair-report', (e, input) => {
+    input = input || {};
+    if (input.kind === 'Lost') { const g = needPin(input.pin, `Report LOST: ${input.qty} unit(s) of ${itemName(input.itemId)}`); if (g) return g; }
+    return mutate(d => core.reportProblem(d, without(input, 'pin'), who()));
+  });
+  handle('inv-repair-update', (e, id, input) => {
+    input = input || {};
+    if (input.action === 'scrap' || input.action === 'delete') {
+      const r = (load().repairs || []).find(x => x.id === id);
+      const g = needPin(input.pin, `${input.action === 'scrap' ? 'Write off' : 'Delete damage entry of'} ${r ? itemName(r.itemId) : ''}`);
+      if (g) return g;
+    }
+    return mutate(d => core.updateRepair(d, id, without(input, 'pin'), who()));
+  });
+  handle('inv-event-undo', (e, ev, dry, pin) => {
+    const pre = core.undoEvent(load(), ev, { dryRun: true });
+    if (dry) return pre;
+    // undoing something that took tools out of the stock (lost / written off) puts them back: that needs the PIN
+    if (pre.ok && (pre.effects || []).some(x => /stock-out/i.test(x))) {
+      const g = needPin(pin, `Undo: ${(pre.effects || []).join('; ')}`);
+      if (g) return g;
+    }
     return mutate(d => core.undoEvent(d, ev));
   });
   handle('inv-loan-delete', (e, id) => mutate(d => core.deleteLoan(d, id)));
@@ -151,7 +327,9 @@ function registerInventory(ipcMain, ctx) {
     return { ok: true };
   }));
   handle('inv-min-bulk', (e, rows) => mutate(d => core.setMinLevels(d, rows)));
-  handle('inv-clear-all', (e, mode) => {
+  handle('inv-clear-all', (e, mode, pin) => {
+    const g = needPin(pin, `CLEAR ${mode === 'moves' ? 'all stock entries' : 'ALL inventory data'}`);
+    if (g) return g;
     const d = load();
     mode = mode === 'moves' ? 'moves' : 'all';
     backup();   // a copy of everything is kept first (Open data and backups folder)
@@ -314,6 +492,9 @@ function registerInventory(ipcMain, ctx) {
     });
     if (r.canceled || !r.filePath) return { canceled: true };
     const snap = core.snapshot(d, pcName());
+    // the other PC does not have our photos folder, so the pictures travel inside this file
+    snap.items = snap.items.map(i => i.photo && core.PHOTO_NAME.test(i.photo) ? Object.assign({}, i, { photo: photoToData(i.photo) }) : i);
+    snap.repairs = snap.repairs.map(x => (x.photos || []).length ? Object.assign({}, x, { photos: x.photos.map(p => core.PHOTO_NAME.test(p) ? photoToData(p) : p).filter(Boolean) }) : x);
     fs.writeFileSync(r.filePath, JSON.stringify(snap));
     return {
       ok: true, path: r.filePath,
@@ -336,6 +517,7 @@ function registerInventory(ipcMain, ctx) {
     let report;
     try { report = core.mergeData(d, raw); }
     catch (err) { return { ok: false, error: err.message }; }
+    migratePhotos(d);
     save();
     return { ok: true, report, from: raw.from || '', exportedAt: raw.exportedAt || '', state: state() };
   });

@@ -350,7 +350,11 @@
   async function deleteMove(m) {
     const extra = m.repairId ? '\n\nThis entry came from a lost / written-off tool, so its entry in the Repairs list is undone too.' : '';
     if (!confirm(`Delete this entry?\n\n${m.dir === 'in' ? 'IN' : 'OUT'} ${fmtQty(m.qty)} ${m.uom} of ${m.itemName} on ${fmtDate(m.date)}${extra}`)) return;
-    const r = await api.invMoveDelete(m.id);
+    const it = S.items.find(i => i.id === m.itemId);
+    const r = it && it.category === 'Tools & Equipment'
+      ? await withPin((pin) => api.invMoveDelete(m.id, false, pin), `Delete a stock entry of ${m.itemName || it.name}`)
+      : await api.invMoveDelete(m.id);
+    if (r.canceled) return;
     if (!r.ok) { say(r.error); return; }
     useState(r); say('Entry deleted.');
   }
@@ -429,6 +433,65 @@
       return b;
     }
     return { overlay, dlg, content, msg, foot, close, button, say: (t, bad) => { msg.textContent = t; msg.style.color = bad ? '#d1242f' : ''; } };
+  }
+
+  // ---------- the admin PIN (the boss) ----------
+  // Removing tools from the stock, writing off / losing a tool, undoing those entries and clearing data need the boss's PIN.
+  function askPin(what, problem) {
+    return new Promise((resolve) => {
+      const d = dialog('Admin PIN needed', { small: true });
+      let done = false;
+      const finish = (v) => { if (done) return; done = true; obs.disconnect(); resolve(v); };
+      const obs = new MutationObserver(() => { if (!document.body.contains(d.overlay)) finish(null); });
+      obs.observe(document.body, { childList: true });
+      const pin = inp('password', '', { maxLength: 10, autocomplete: 'off' });
+      pin.inputMode = 'numeric'; pin.style.fontSize = '20px'; pin.style.letterSpacing = '4px'; pin.style.width = '100%';
+      d.content.append(E('p', '', 'Ask the boss to type the admin PIN to allow this.'), what ? E('p', 'invNote', what) : E('span'), pin);
+      if (problem) d.say(problem, true);
+      const ok = () => { if (!pin.value.trim()) { d.say('Type the PIN.', true); return; } const v = pin.value.trim(); d.close(); finish(v); };
+      d.button('Approve', 'primary', ok);
+      d.button('Cancel', '', () => { d.close(); finish(null); });
+      pin.addEventListener('keydown', (e) => { if (e.key === 'Enter') ok(); });
+      setTimeout(() => pin.focus(), 0);
+    });
+  }
+  // set the PIN the first time, or change it. true when a PIN is set afterwards.
+  function setPinDialog() {
+    return new Promise((resolve) => {
+      const has = !!(S && S.pinSet);
+      const d = dialog(has ? 'Change the admin PIN' : 'Set the admin PIN', { small: true });
+      let done = false;
+      const finish = (v) => { if (done) return; done = true; obs.disconnect(); resolve(v); };
+      const obs = new MutationObserver(() => { if (!document.body.contains(d.overlay)) finish(has); });
+      obs.observe(document.body, { childList: true });
+      const mk = () => { const i = inp('password', '', { maxLength: 10, autocomplete: 'off' }); i.inputMode = 'numeric'; return i; };
+      const oldP = mk(), p1 = mk(), p2 = mk();
+      d.content.append(E('p', '', has ? 'Type the current PIN, then the new one.' : 'This is the boss\'s PIN. Nobody can remove tools from the stock, write them off or clear data without it. Choose 4 to 10 digits and keep it private.'));
+      if (has) d.content.append(fld('Current PIN', oldP));
+      d.content.append(grid(fld('New PIN (4 to 10 digits)', p1), fld('Type it again', p2)));
+      d.button('Save PIN', 'primary', async () => {
+        if (p1.value !== p2.value) { d.say('The two PINs are not the same.', true); return; }
+        const r = await api.invPinSet(oldP.value, p1.value);
+        if (!r.ok) { d.say(r.error, true); return; }
+        useState(r); d.close(); finish(true); say('Admin PIN saved.');
+      });
+      d.button('Cancel', '', () => { d.close(); finish(has); });
+      setTimeout(() => (has ? oldP : p1).focus(), 0);
+    });
+  }
+  // Runs call(pin). The first try has no PIN: the app itself knows when one is needed and answers with a code.
+  async function withPin(call, what) {
+    let r = await call('');
+    if (!r || !['PIN', 'NO_PIN', 'PIN_WRONG'].includes(r.code)) return r;
+    if (r.code === 'NO_PIN') { if (!(await setPinDialog())) return { ok: false, canceled: true }; }
+    let problem = '';
+    for (;;) {
+      const pin = await askPin(what, problem);
+      if (pin == null) return { ok: false, canceled: true };
+      r = await call(pin);
+      if (r && r.code === 'PIN_WRONG') { problem = r.error; continue; }
+      return r;
+    }
   }
 
   function fld(label, input, hint) {
@@ -1547,7 +1610,8 @@
     d.content.append(warn, a, b, E('div', 'invNote', 'To continue, type the word CLEAR below.'), box);
     const go = d.button('Clear data', 'primary', async () => {
       if (box.value.trim().toUpperCase() !== 'CLEAR') { d.say('Please type CLEAR first.', true); return; }
-      const r = await api.invClearAll(r2.checked ? 'all' : 'moves');
+      const r = await withPin((pin) => api.invClearAll(r2.checked ? 'all' : 'moves', pin), 'Clear inventory data');
+      if (r.canceled) return;
       if (!r.ok) { d.say(r.error, true); return; }
       useState(r); d.close(); say('Cleared. A backup was saved first.');
     });
@@ -1598,7 +1662,7 @@
     get S() { return S; },
     E, say, esc, fmtQty, fmtDate, daysBetween, addDays, lc, LIMIT,
     dialog, fld, inp, sel, grid, datalist, itemInput, resolveItem,
-    load, useState,
+    load, useState, askPin, setPinDialog, withPin, photoSrc: (v) => !v ? '' : /^data:/.test(v) ? v : (window.PhotoBase || '') + v,
     openMove, openImport, exportExcel, openSync, openFormHeading, makeForm,
     buildReport, reportDoc, rpTable, outputReport, deleteMove,
     askName
