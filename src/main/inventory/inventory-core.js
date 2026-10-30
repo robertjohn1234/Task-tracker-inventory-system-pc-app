@@ -393,7 +393,7 @@ function addMovement(data, input, by, opts) {
   const old = input.id ? data.movements.find(m => m.id === input.id && !m.deleted) : null;
   if (input.id && !old) return fail('That entry no longer exists.');
 
-  if (dir === 'in' && it.category === TOOLS && input.price !== undefined && input.price !== '' && input.price != null && priceNum(input.price) === null) return fail('The price must be a number, zero or more.');
+  if (dir === 'in' && input.price !== undefined && input.price !== '' && input.price != null && priceNum(input.price) === null) return fail('The price must be a number, zero or more.');
   if (dir === 'out' && it.category === TOOLS) {
     if (!TOOL_OUT_REASONS.includes(input.reason)) return fail('Choose why the units are being removed.', { code: 'REASON' });
     const bad = needApproval(input, input.remarks);
@@ -418,13 +418,13 @@ function addMovement(data, input, by, opts) {
   const rec = cleanMoveRecord({
     id: old ? old.id : uid(), itemId: it.id, dir, qty, date,
     reason: input.reason || (dir === 'in' ? IN_REASONS[0] : OUT_REASONS[0]),
-    party: input.party, ref: input.ref, price: dir === 'in' && it.category === TOOLS ? input.price : null, remarks: input.remarks, by: text(by, 60), approvedBy: dir === 'out' && it.category === TOOLS ? input.approvedBy : '',
+    party: input.party, ref: input.ref, price: dir === 'in' ? input.price : null, remarks: input.remarks, by: text(by, 60), approvedBy: dir === 'out' && it.category === TOOLS ? input.approvedBy : '',
     src: old ? old.src : '', createdAt: old ? old.createdAt : now, updatedAt: now, deleted: false
   });
   if (old) data.movements[data.movements.indexOf(old)] = rec;
   else data.movements.push(rec);
   // a purchase price typed with new units becomes the tool's current value (the latest price wins)
-  if (dir === 'in' && it.category === TOOLS && rec.price != null && !old) { it.price = rec.price; it.updatedAt = now; }
+  if (dir === 'in' && rec.price != null && !old) { it.price = rec.price; it.updatedAt = now; }
   return { ok: true, movement: rec, onHand: Math.round(after * 1000) / 1000 };
 }
 

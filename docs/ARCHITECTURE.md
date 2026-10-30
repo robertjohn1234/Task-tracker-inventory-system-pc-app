@@ -101,3 +101,16 @@ merge keeps the newest `updatedAt` per record.
 - The **Insights** tab (`insightsData()` in `tools-ui.js`) works only from data already in the app: needs attention, problem tools, borrowers to follow up,
   idle tools (90 days, `IDLE_DAYS`), always-out tools, removals by month / reason, and data to complete. The same sections feed the on-screen tables and the Print / PDF.
   A tool that was never lent counts its idle days from the day it was created in the app.
+
+## PIN hand-over and the second protection
+
+- `node tools/make-pin.js 1234` makes `admin-pin.json`; put it next to the app. On start, with no PIN set, the app picks it up (`ensureSeed` in `inventory.js`) and deletes it.
+- Once a PIN exists the app writes two marker files (`inventory/admin-pin.required` and `<userData>/wh-pin.flag`). If `admin-pin.json` disappears while a marker remains, removals answer `PIN_MISSING`
+  and a new PIN cannot be set inside the app. Only a new PIN file from the boss restores access. Adding units, lending and returning keep working. Still a deterrent, not real security.
+
+## Consumables: price and pictures
+
+- Same rule as tools: `price` is optional. A unit price typed on **Stock In** is saved on that movement and becomes the item's current price; stock-outs never carry a price.
+  Values (stock value, cost issued, reorder estimate) use each item's latest price and always say how many items are priced.
+- A picture on a consumable is optional (`photoPicker` is shared from `tools-ui.js` as `InvKit.photoPicker`). The Stock filter has "Missing price" and "Missing picture".
+- Insights (consumables) gained cost figures: stock value, cost issued, purchases, cost by month, most costly items, where the money sits, value of items not moving.

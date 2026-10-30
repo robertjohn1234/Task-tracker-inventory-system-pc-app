@@ -74,15 +74,21 @@ function registerInventory(ipcMain, ctx) {
     try { fs.mkdirSync(dir(), { recursive: true }); fs.appendFileSync(auditFile(), `${new Date().toISOString()}\t${who()}\t${what}\t${result}\n`); } catch (e) {}
   }
   // A PIN file made with  node tools/make-pin.js 1234  can be put next to the app (or in the project folder).
-  // The first time the app runs with no PIN set, it copies that file into its data folder and deletes the original.
-  // This happens only once per PC (admin-pin.seeded), so it can never replace a PIN later, and deleting admin-pin.json to reset a forgotten PIN is not undone.
-  let seedChecked = false;
+  // When the app runs with no PIN set, it copies that file into its data folder and deletes the original.
+  //
+  // Second protection: once a PIN exists, the app leaves two small marker files ("a PIN must exist on this PC"), one in the
+  // inventory folder and one outside it. If admin-pin.json is later deleted while a marker is still there, nobody can set a new
+  // PIN from inside the app: removals stay locked until the boss puts a fresh PIN file (make-pin.js) next to the app.
+  // (Still a deterrent: someone who deletes the PIN file AND both markers is treated as a new PC.)
+  const markers = () => [path.join(dir(), 'admin-pin.required'), path.join(ctx.userDataDir(), 'wh-pin.flag')];
+  const writeMarkers = () => markers().forEach(m => { try { fs.mkdirSync(path.dirname(m), { recursive: true }); if (!fs.existsSync(m)) fs.writeFileSync(m, 'An admin PIN is set on this PC. Do not delete this file.'); } catch (e) {} });
+  const pinMissing = () => !readPin() && markers().some(m => { try { return fs.existsSync(m); } catch (e) { return false; } });
+  let seedChecked = false, missingLogged = false;
   function ensureSeed() {
     if (seedChecked) return;
     seedChecked = true;
     try {
-      const marker = path.join(dir(), 'admin-pin.seeded');
-      if (readPin() || fs.existsSync(marker)) return;
+      if (readPin()) { writeMarkers(); return; }                 // PIN already there (also covers PCs that got it before this protection existed)
       let dirs = [];
       if (typeof ctx.seedDirs === 'function') dirs = ctx.seedDirs();
       else if (electronApp && electronApp.getAppPath) dirs = [electronApp.isPackaged ? path.dirname(process.execPath) : electronApp.getAppPath(), process.cwd()];
@@ -91,19 +97,22 @@ function registerInventory(ipcMain, ctx) {
         let p = null;
         try { p = JSON.parse(fs.readFileSync(src, 'utf8')); } catch (e) { continue; }
         if (!p || !/^[0-9a-f]{32}$/.test(String(p.salt)) || !/^[0-9a-f]{64}$/.test(String(p.hash))) continue;
+        const was = pinMissing();
         fs.mkdirSync(dir(), { recursive: true });
         fs.writeFileSync(pinFile(), JSON.stringify({ salt: p.salt, hash: p.hash, setAt: new Date().toISOString(), from: 'file' }));
-        fs.writeFileSync(marker, new Date().toISOString());
+        writeMarkers();
         try { fs.unlinkSync(src); } catch (e) {}
-        audit('Admin PIN picked up from a PIN file', 'ok');
+        audit(was ? 'Admin PIN restored from a new PIN file' : 'Admin PIN picked up from a PIN file', 'ok');
         return;
       }
+      if (pinMissing() && !missingLogged) { missingLogged = true; audit('Admin PIN file is missing', 'removals are locked until the boss supplies a new PIN file'); }
     } catch (e) {}
   }
   // null = allowed, otherwise the answer to send back. `what` says what is being approved (written to audit.log).
   function needPin(pin, what) {
     ensureSeed();
     const p = readPin();
+    if (!p && pinMissing()) { audit(what, 'BLOCKED: admin PIN file missing'); return { ok: false, code: 'PIN_MISSING', error: 'The admin PIN file is missing, so this is locked. Contact the boss: a new PIN file is needed.' }; }
     if (!p) return { ok: false, code: 'NO_PIN', error: 'The admin PIN has not been set yet. The boss sets it once (More → Admin PIN).' };
     if (Date.now() < pinLockedUntil) return { ok: false, code: 'PIN_LOCKED', error: `Too many wrong PINs. Try again in ${Math.ceil((pinLockedUntil - Date.now()) / 60000)} minute(s).` };
     if (pin == null || pin === '') return { ok: false, code: 'PIN', error: 'The admin PIN is needed. Ask the boss.' };
@@ -216,7 +225,7 @@ function registerInventory(ipcMain, ctx) {
       today, scope, items, movements, loans, repairs, events, summary: core.summary({ items: items }, stats, today),
       settings: { user: d.settings.user || '', defaultUser: who(), formCompany: d.settings.formCompany || '', formDept: d.settings.formDept || '', formIssuerMode: d.settings.formIssuerMode || 'user', formIssuerName: d.settings.formIssuerName || '', formLogo: d.settings.formLogo || '' },
       categories: core.CATEGORIES.filter(c => scope === 'all' || ((c.name === core.TOOLS) === (scope === 'tools'))), inReasons: core.IN_REASONS, outReasons: core.OUT_REASONS, toolOutReasons: core.TOOL_OUT_REASONS, conditions: core.CONDITIONS, returnConditions: core.RETURN_CONDITIONS,
-      pinSet: !!readPin(), folder: dir(), photoBase: pathToFileURL(photosDir()).href + '/'
+      pinSet: !!readPin(), pinMissing: pinMissing(), folder: dir(), photoBase: pathToFileURL(photosDir()).href + '/'
     };
   }
 
@@ -239,12 +248,15 @@ function registerInventory(ipcMain, ctx) {
   // the mark-up editor needs the real picture data (a canvas cannot be drawn from a file link and then saved)
   // set or change the admin PIN: 4 to 10 digits. Changing it needs the old one.
   handle('inv-pin-set', (e, oldPin, newPin) => {
+    ensureSeed();
     const cur = readPin();
+    if (!cur && pinMissing()) return { ok: false, code: 'PIN_MISSING', error: 'The admin PIN file is missing. A new PIN cannot be set here: contact the boss for a new PIN file.' };
     if (cur) { const g = needPin(oldPin, 'Change the admin PIN'); if (g) return g; }
     if (!pinOk(newPin)) return { ok: false, error: 'The PIN must be 4 to 10 digits (numbers only).' };
     const salt = crypto.randomBytes(16).toString('hex');
     fs.mkdirSync(dir(), { recursive: true });
     fs.writeFileSync(pinFile(), JSON.stringify({ salt, hash: hashPin(newPin, salt), setAt: new Date().toISOString() }));
+    writeMarkers();
     audit(cur ? 'Admin PIN changed' : 'Admin PIN set', 'ok');
     return { ok: true, state: state() };
   });

@@ -303,3 +303,15 @@ test('price: optional, never blocks, bad values are refused, the latest purchase
   assert.equal(d.items.find(i => i.id === none.item.id).price, 1400);
   assert.equal(core.addMovement(d, { itemId: none.item.id, dir: 'in', qty: 1, reason: 'Purchase / delivery', price: 'x' }, 't').ok, false);
 });
+
+test('price on consumables: Stock In price sets the item price, picture stays optional', () => {
+  const d = fresh(), g = addConsumable(d, 'Gloves', 10);
+  assert.equal(g.price, null); assert.equal(g.photo, '');
+  const r = core.addMovement(d, { itemId: g.id, dir: 'in', qty: 5, reason: 'Purchase / delivery', price: '85.50' }, 't');
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.movement.price, 85.5);
+  assert.equal(d.items.find(i => i.id === g.id).price, 85.5);
+  const out = core.addMovement(d, { itemId: g.id, dir: 'out', qty: 2, reason: 'Issued', price: '999' }, 't');
+  assert.equal(out.movement.price, null, 'a stock-out never carries a purchase price');
+  assert.equal(core.addMovement(d, { itemId: g.id, dir: 'in', qty: 1, reason: 'Purchase / delivery', price: '-4' }, 't').ok, false);
+});

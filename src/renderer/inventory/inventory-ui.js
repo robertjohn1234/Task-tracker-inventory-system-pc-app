@@ -86,6 +86,15 @@
   const daysBetween = (a, b) => Math.round((new Date(b + 'T00:00:00Z') - new Date(a + 'T00:00:00Z')) / 86400000);
   const addDays = (iso, n) => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
   const lc = (s) => String(s || '').toLowerCase();
+  const hasPrice = (v) => typeof v === 'number' && v >= 0;
+  const peso = (n) => '₱' + Number(n || 0).toLocaleString('en-PH', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  const pesoOr = (n) => (hasPrice(n) ? peso(n) : '');
+  const photoUrl = (v) => (!v ? '' : /^data:/.test(v) ? v : (window.PhotoBase || '') + v);
+  function itemThumb(i) {
+    const w = E('span'); w.style.cssText = 'display:inline-block;width:34px;height:34px;border-radius:6px;overflow:hidden;vertical-align:middle;background:rgba(128,128,128,.12)';
+    if (i && i.photo) { const im = document.createElement('img'); im.src = photoUrl(i.photo); im.loading = 'lazy'; im.alt = ''; im.style.cssText = 'width:100%;height:100%;object-fit:cover'; w.appendChild(im); }
+    return w;
+  }
 
   let S = null;            // everything the main process sends us
   let tab = 'stock';
@@ -134,9 +143,10 @@
     const r = await api.invLoad(InvMode.get());
     if (!r || !r.ok) { body.textContent = (r && r.error) || 'Could not load the inventory.'; return; }
     S = r.state;
+    if (S.photoBase) window.PhotoBase = S.photoBase;
     renderAll();
   }
-  function useState(r) { if (r && r.state) { S = r.state; renderAll(); } }
+  function useState(r) { if (r && r.state) { S = r.state; if (S.photoBase) window.PhotoBase = S.photoBase; renderAll(); } }
   const isTools = () => InvMode.get() === 'tools';
 
   // ---------- top bar pieces ----------
@@ -152,6 +162,10 @@
     mk('Items', s.items, '', () => { tab = 'stock'; F.status = ''; renderAll(); });
     mk('Low stock', s.low, 'warn', () => { tab = 'stock'; F.status = 'low'; renderAll(); });
     mk('Out of stock', s.out, 'bad', () => { tab = 'stock'; F.status = 'out'; renderAll(); });
+    const live = S.items.filter(i => !i.archived), priced = live.filter(i => hasPrice(i.price));
+    const kv = E('div', 'invKpi tlKpi'); kv.append(E('b', '', priced.length ? peso(priced.reduce((a, i) => a + i.price * Math.max(0, i.stat.onHand), 0)) : '—'), E('span', '', 'Stock value'), E('small', '', `${priced.length} of ${live.length} items priced`));
+    kv.addEventListener('click', () => { tab = 'insights'; renderAll(); });
+    kpis.appendChild(kv);
   }
 
 
@@ -180,7 +194,7 @@
     if (tab === 'stock') {
       filters.append(
         select(S.categories.map(c => [c.name, c.name]), F.category, v => { F.category = v; renderBody(); }, 'All categories'),
-        select([['low', 'Low stock'], ['out', 'Out of stock'], ['ok', 'OK'], ['archived', 'Archived']], F.status, v => { F.status = v; renderBody(); }, 'Any status')
+        select([['low', 'Low stock'], ['out', 'Out of stock'], ['ok', 'OK'], ['noprice', 'Missing price'], ['nopic', 'Missing picture'], ['archived', 'Archived']], F.status, v => { F.status = v; renderBody(); }, 'Any status')
       );
     } else if (tab === 'moves') {
       filters.append(
@@ -238,7 +252,9 @@
     const words = lc(F.text).split(/\s+/).filter(Boolean);
     let list = S.items.filter(i => {
       if (F.category && i.category !== F.category) return false;
-      if (F.status) { if (i.stat.status !== F.status) return false; }
+      if (F.status === 'noprice') { if (i.archived || hasPrice(i.price)) return false; }
+      else if (F.status === 'nopic') { if (i.archived || i.photo) return false; }
+      else if (F.status) { if (i.stat.status !== F.status) return false; }
       else if (i.archived) return false;
       if (!words.length) return true;
       const hay = lc([i.code, i.name, i.group, i.location, i.barcode, i.supplier, i.serial].join(' '));
@@ -250,6 +266,7 @@
         case 'code': return i.code;
         case 'category': return i.category;
         case 'onHand': return i.stat.onHand;
+        case 'value': return hasPrice(i.price) ? i.price * i.stat.onHand : -1;
         case 'status': return STATUS_ORDER[i.stat.status];
         case 'last': return i.stat.last || '';
         default: return lc(i.name);
@@ -273,15 +290,15 @@
       return;
     }
     const { t, tb } = table([
-      { label: 'Code', sort: 'code' }, { label: 'Item', sort: 'name' }, { label: 'Category', sort: 'category' },
-      { label: 'On hand', sort: 'onHand', num: true }, { label: 'Reorder pt', num: true }, { label: 'Status', sort: 'status' },
+      { label: '' }, { label: 'Code', sort: 'code' }, { label: 'Item', sort: 'name' }, { label: 'Category', sort: 'category' },
+      { label: 'On hand', sort: 'onHand', num: true }, { label: 'Price', num: true }, { label: 'Value', sort: 'value', num: true }, { label: 'Reorder pt', num: true }, { label: 'Status', sort: 'status' },
       { label: 'Location' }, { label: 'Last movement', sort: 'last' }, { label: '' }
     ]);
     list.slice(0, LIMIT).forEach(i => {
       const tr = E('tr', 'invClick');
       tr.addEventListener('click', () => openDetail(i.id));
       tr.addEventListener('contextmenu', (e) => { e.preventDefault(); rowMenu(e, i); });
-      tr.append(td('code', i.code));
+      tr.append(td('', itemThumb(i)), td('code', i.code));
       const nameCell = td('');
       nameCell.append(E('div', '', i.name));
       if (i.group) nameCell.append(E('div', 'invSub', i.group));
@@ -289,6 +306,7 @@
       tr.append(td('', i.category));
       const q = td('num', fmtQty(i.stat.onHand) + ' ' + i.uom);
       tr.appendChild(q);
+      tr.append(td('num', pesoOr(i.price)), td('num', hasPrice(i.price) ? peso(i.price * Math.max(0, i.stat.onHand)) : ''));
       tr.append(td('num', i.stat.rop ? fmtQty(i.stat.rop) : ''));
       tr.append(td('', statusPill(i.stat.status)));
       tr.append(td('', i.location));
@@ -327,14 +345,16 @@
     });
     list.sort((a, b) => (b.date + b.createdAt).localeCompare(a.date + a.createdAt));
     const { t, tb } = table([
-      { label: 'Date' }, { label: 'Code' }, { label: 'Item' }, { label: 'In / Out' }, { label: 'Qty', num: true },
+      { label: 'Date' }, { label: 'Code' }, { label: 'Item' }, { label: 'In / Out' }, { label: 'Qty', num: true }, { label: 'Price / unit', num: true }, { label: 'Value', num: true },
       { label: 'Reason' }, { label: 'Department / supplier' }, { label: 'Reference' }, { label: 'Form' }, { label: 'Remarks' }, { label: 'By' }, { label: '' }
     ]);
+    const priceOf = new Map(S.items.map(i => [i.id, i.price]));
     list.slice(0, LIMIT).forEach(m => {
       const tr = E('tr');
+      const unit = m.dir === 'in' && hasPrice(m.price) ? m.price : priceOf.get(m.itemId);
       tr.append(td('', fmtDate(m.date)), td('code', m.itemCode), td('', m.itemName));
       tr.append(td('', E('span', m.dir === 'in' ? 'invMoveIn' : 'invMoveOut', m.dir === 'in' ? 'IN' : 'OUT')));
-      tr.append(td('num', fmtQty(m.qty) + ' ' + m.uom), td('', m.reason), td('', m.party), td('', m.ref), td('code', m.formNo || ''), td('', m.remarks), td('', m.by));
+      tr.append(td('num', fmtQty(m.qty) + ' ' + m.uom), td('num', pesoOr(unit)), td('num', hasPrice(unit) ? peso(unit * m.qty) : ''), td('', m.reason), td('', m.party), td('', m.ref), td('code', m.formNo || ''), td('', m.remarks), td('', m.by));
       const act = td('act');
       if (m.dir === 'out') act.append(actBtn('🖨', m.formNo ? 'Print form ' + m.formNo : 'Make a withdrawal form', () => makeForm([m.id], null)), document.createTextNode(' '));
       act.append(actBtn('✎', 'Edit this entry', () => openMove({ move: m })), document.createTextNode(' '),
@@ -378,16 +398,18 @@
     if (!list.length) { body.appendChild(E('div', 'invEmpty', 'Nothing needs reordering right now.')); return; }
     const { t, tb } = table([
       { label: 'Code' }, { label: 'Item' }, { label: 'On hand', num: true }, { label: 'Reorder pt', num: true },
-      { label: 'Suggested order', num: true }, { label: 'Daily use', num: true }, { label: 'Supplier' }, { label: 'Status' }
+      { label: 'Suggested order', num: true }, { label: 'Est. cost', num: true }, { label: 'Daily use', num: true }, { label: 'Supplier' }, { label: 'Status' }
     ]);
     list.forEach(i => {
       const tr = E('tr', 'invClick');
       tr.addEventListener('click', () => openDetail(i.id));
       tr.append(td('code', i.code), td('', i.name), td('num', fmtQty(i.stat.onHand) + ' ' + i.uom), td('num', i.stat.rop ? fmtQty(i.stat.rop) : ''),
-        td('num', fmtQty(i.stat.suggest) + ' ' + i.uom), td('num', i.stat.avgDaily ? String(i.stat.avgDaily) : ''), td('', i.supplier), td('', statusPill(i.stat.status)));
+        td('num', fmtQty(i.stat.suggest) + ' ' + i.uom), td('num', hasPrice(i.price) ? peso(i.price * i.stat.suggest) : ''), td('num', i.stat.avgDaily ? String(i.stat.avgDaily) : ''), td('', i.supplier), td('', statusPill(i.stat.status)));
       tb.appendChild(tr);
     });
     body.appendChild(t);
+    const est = list.filter(i => hasPrice(i.price) && i.stat.suggest > 0);
+    if (est.length) body.appendChild(E('div', 'invNote', `Estimated cost to reorder: ${peso(est.reduce((a, i) => a + i.price * i.stat.suggest, 0))} (${est.length} of ${list.length} items have a price).`));
   }
 
   async function reorderTask(list) {
@@ -458,6 +480,7 @@
   // set the PIN the first time, or change it. true when a PIN is set afterwards.
   function setPinDialog() {
     return new Promise((resolve) => {
+      if (S && S.pinMissing) { say('The admin PIN file is missing. Contact the boss: a new PIN file is needed.'); resolve(false); return; }
       const has = !!(S && S.pinSet);
       const d = dialog(has ? 'Change the admin PIN' : 'Set the admin PIN', { small: true });
       let done = false;
@@ -568,6 +591,7 @@
       location: inp('text', item ? item.location : '', { maxLength: 120 }),
       supplier: inp('text', item ? item.supplier : '', { maxLength: 120 }),
       barcode: inp('text', item ? item.barcode : '', { maxLength: 60 }),
+      price: inp('number', item && hasPrice(item.price) ? item.price : ''),
       minQty: inp('number', item ? item.minQty || '' : ''),
       reorderQty: inp('number', item ? item.reorderQty || '' : ''),
       leadTimeDays: inp('number', item ? item.leadTimeDays || '' : ''),
@@ -598,7 +622,10 @@
     const codeFld = fld('Code', f.code); codeFld.append(codeHint);
     c.append(grid(codeFld, fld('Group / section (optional)', f.group)));
     c.append(grid(fld('Storage location', f.location), fld('Supplier', f.supplier)));
-    c.append(fld('Manufacturer barcode (optional)', f.barcode, 'If the item already has a printed barcode, scan it here. Scanning it later finds this item.'));
+    c.append(grid(fld('Price per unit, ₱ (optional)', f.price, 'Leave empty if you do not know it. A price typed on Stock In updates this.'), fld('Manufacturer barcode (optional)', f.barcode)));
+    const PP = window.InvKit && window.InvKit.photoPicker;
+    const pic = PP ? PP(item ? item.photo : '', d.overlay, (m) => d.say(m, !!m)) : null;
+    if (pic) c.append(fld('Picture (optional)', pic.el, 'Helps a new storekeeper pick the right item, for example the right cable size.'));
     c.append(E('div', 'invSub', 'Reordering'));
     c.append(grid(fld('Minimum level', f.minQty, 'Warn when stock falls to this'), fld('Usual order quantity', f.reorderQty)));
     c.append(grid(fld('Supplier lead time (days)', f.leadTimeDays), fld('Safety stock', f.safetyStock)));
@@ -613,10 +640,11 @@
       const input = {
         id: item ? item.id : undefined,
         name: f.name.value, category: f.category.value, code: f.code.value, uom: f.uom.value, group: f.group.value,
-        location: f.location.value, supplier: f.supplier.value, barcode: f.barcode.value,
+        location: f.location.value, supplier: f.supplier.value, barcode: f.barcode.value, price: f.price.value,
         minQty: f.minQty.value, reorderQty: f.reorderQty.value, leadTimeDays: f.leadTimeDays.value, safetyStock: f.safetyStock.value,
         startQty: f.startQty.value, startDate: f.startDate.value, notes: f.notes.value, archived: f.archived.checked
       };
+      if (pic && pic.changed()) input.photo = pic.get();
       const r = await api.invItemSave(input);
       if (!r.ok) { d.say(r.error, true); return; }
       useState(r); d.close();
@@ -660,6 +688,8 @@
     const ref = inp('text', mv ? mv.ref : '', { maxLength: 80 });
     ref.placeholder = 'PO / DR / WO / BRF no.';
     const remarks = inp('text', mv ? mv.remarks : '', { maxLength: 500 });
+    const price = inp('number', mv && hasPrice(mv.price) ? mv.price : '');
+    const priceFld = fld('Unit price, ₱ (optional)', price, 'What you paid per unit. It becomes the item\'s current price.');
     const mkForm = document.createElement('input'); mkForm.type = 'checkbox'; mkForm.checked = true;
     const mkRow = E('label', 'invChk'); mkRow.append(mkForm, E('span', '', 'Also make a withdrawal form (to print or save as PDF)'));
     const sessionIds = [];
@@ -677,6 +707,7 @@
       fillReasons();
       if (typeof showInfo === 'function') showInfo();
       mkRow.style.display = (dir === 'out' && !mv && !isTools()) ? '' : 'none';
+      priceFld.style.display = dir === 'in' ? '' : 'none';
       party.placeholder = isTools() ? (dir === 'in' ? 'Supplier' : 'Why / who') : (dir === 'in' ? 'Supplier, or department that returned it' : 'Department that took it (e.g. Piping)');
     };
     bIn.addEventListener('click', () => setDir('in'));
@@ -698,6 +729,7 @@
     c.append(grid(fld('Quantity', qty), fld('Date', date)));
     c.append(grid(fld('Reason', reason), fld('Department / supplier', party)));
     c.append(grid(fld('Reference', ref), fld('Remarks', remarks)));
+    c.append(priceFld);
     c.append(mkRow);
     setDir(dir); showInfo();
 
@@ -709,7 +741,7 @@
           !confirm(`${it.name} has ${fmtQty(it.stat.onLoan)} borrowed.\n\nIf someone is RETURNING a tool, press Cancel and use Borrowed tools > Return. Stock In adds new units and the borrowed count will not go down.\n\nPress OK only if you are adding NEW units (bought or received).`)) return;
       const r = await api.invMoveSave({
         id: mv ? mv.id : undefined, itemId: it.id, dir, qty: qty.value, date: date.value,
-        reason: reason.value, party: party.value, ref: ref.value, remarks: remarks.value
+        reason: reason.value, party: party.value, ref: ref.value, remarks: remarks.value, price: dir === 'in' ? price.value : ''
       }, { allowNegative });
       if (!r.ok) {
         if (r.code === 'NEGATIVE' && !allowNegative && confirm(r.error + '\n\nRecord it anyway? (The stock will go below zero.)')) return save(another, true);
@@ -719,7 +751,7 @@
       useState(r);
       if (!mv && dir === 'out') sessionIds.push(r.movement.id);
       say(`${dir === 'in' ? 'Stock in' : 'Stock out'}: ${fmtQty(r.movement.qty)} ${it.uom} of ${it.name}. On hand now ${fmtQty(r.onHand)}.`);
-      if (another) { item.value = ''; qty.value = ''; remarks.value = ''; showInfo(); item.focus(); d.say('Saved. Next one:'); }
+      if (another) { item.value = ''; qty.value = ''; remarks.value = ''; price.value = ''; showInfo(); item.focus(); d.say('Saved. Next one:'); }
       else { d.close(); if (mkForm.checked && sessionIds.length) makeForm(sessionIds, null); }
     }
     d.button('Save', 'primary', () => save(false));
@@ -850,7 +882,20 @@
     let run = 0; const abc = { A: [], B: [], C: [] };
     sorted.forEach(r => { const before = run / totalN; run += r.n; (before < 0.8 ? abc.A : before < 0.95 ? abc.B : abc.C).push(r); });
     const takers = [...parties.values()].sort((a, b) => b.n - a.n).slice(0, 8);
-    return { today, from, period, items, rows, used, top, freq, rising, falling, attention, dead, nomin, abc, takers, issues, receipts, mv };
+    // money: every figure uses the item's latest price; items without a price are left out and counted
+    const priceById = new Map(items.map(i => [i.id, hasPrice(i.price) ? i.price : null]));
+    const pricedItems = items.filter(i => priceById.get(i.id) != null);
+    const stockValue = pricedItems.reduce((a, i) => a + i.price * Math.max(0, i.stat.onHand), 0);
+    let costUsed = 0, purchases = 0;
+    mv.forEach(m => {
+      if (m.date < from || m.date > today) return;
+      if (isUse(m)) { const pr = priceById.get(m.itemId); if (pr != null) costUsed += pr * m.qty; }
+      else if (m.dir === 'in' && m.reason !== 'Opening balance' && m.reason !== 'Count adjustment') { const pr = hasPrice(m.price) ? m.price : priceById.get(m.itemId); if (pr != null) purchases += pr * m.qty; }
+    });
+    const costRows = rows.filter(r => r.qty > 0 && priceById.get(r.it.id) != null).map(r => Object.assign({ cost: r.qty * priceById.get(r.it.id) }, r)).sort((a, b) => b.cost - a.cost).slice(0, 10);
+    const tiedUp = pricedItems.filter(i => i.stat.onHand > 0).map(i => ({ it: i, value: i.price * i.stat.onHand })).sort((a, b) => b.value - a.value).slice(0, 10);
+    const deadValue = dead.reduce((a, r) => a + (priceById.get(r.it.id) != null ? priceById.get(r.it.id) * r.it.stat.onHand : 0), 0);
+    return { today, from, period, items, rows, used, top, freq, rising, falling, attention, dead, nomin, abc, takers, issues, receipts, mv, priceById, pricedItems, stockValue, costUsed, purchases, costRows, tiedUp, deadValue };
   }
 
   function monthlyFor(mv, today, pred, valueFn) {
@@ -874,6 +919,11 @@
       <div><b>${R.used.length}</b><span>Items used</span></div>
       <div><b>${R.rows.length - R.used.length}</b><span>Items not used</span></div>
       <div><b>${R.receipts}</b><span>Deliveries / stock-ins</span></div></div>`;
+    h += `<div class="insKpis">
+      <div><b>${R.pricedItems.length ? peso(R.stockValue) : '—'}</b><span>Stock value now · ${R.pricedItems.length} of ${R.items.length} items priced</span></div>
+      <div><b>${R.costUsed ? peso(R.costUsed) : '—'}</b><span>Cost of items issued (${period} days)</span></div>
+      <div><b>${R.purchases ? peso(R.purchases) : '—'}</b><span>Bought / delivered (${period} days)</span></div>
+      <div><b>${R.deadValue ? peso(R.deadValue) : '—'}</b><span>Tied up in items not used for 180 days</span></div></div>`;
 
     h += `<div class="insGrid">`;
     h += `<section class="insWide"><h4>Most used items — by quantity taken (last ${period} days)</h4>${svgBarsH(R.top.map(r => ({ label: r.it.name, value: r.qty, text: `${fmtQty(r.qty)} ${r.it.uom} · ${r.n}×` })), pal, { label: 'Most used items' })}
@@ -883,6 +933,16 @@
     const outM = monthlyFor(R.mv, R.today, isUse, () => 1);
     const inM = monthlyFor(R.mv, R.today, m => m.dir === 'in' && m.reason !== 'Opening balance' && m.reason !== 'Count adjustment', () => 1);
     h += `<section class="insWide"><h4>Activity by month — number of entries, last 12 months</h4>${svgBarsV(outM.ml.map(m => m.label), [{ name: 'Issued out', values: outM.vals, color: pal.bar }, { name: 'Delivered / stock in', values: inM.vals, color: pal.bar2 }], pal, { label: 'Activity by month' })}</section>`;
+
+    const costM = monthlyFor(R.mv, R.today, m => isUse(m) && R.priceById.get(m.itemId) != null, m => m.qty * R.priceById.get(m.itemId));
+    if (R.pricedItems.length) {
+      h += `<section class="insWide"><h4>Cost of items issued, by month (₱, last 12 months)</h4>${svgBarsV(costM.ml.map(m => m.label), [{ name: 'Cost issued (₱)', values: costM.vals.map(v => Math.round(v)), color: pal.bar }], pal, { legend: true, label: 'Cost by month' })}
+        <p class="insNote">Worked out with each item's latest price. Items without a price are not counted (fill them in to make this complete).</p></section>`;
+      h += `<section><h4>Most costly items used (last ${period} days)</h4>${svgBarsH(R.costRows.map(r => ({ label: r.it.name, value: r.cost, text: `${peso(r.cost)} · ${fmtQty(r.qty)} ${r.it.uom}` })), pal, { label: 'Most costly items' })}</section>`;
+      h += `<section><h4>Where the money sits in stock</h4>${svgBarsH(R.tiedUp.map(r => ({ label: r.it.name, value: r.value, text: `${peso(r.value)} · ${fmtQty(r.it.stat.onHand)} ${r.it.uom}` })), pal, { label: 'Stock value by item' })}</section>`;
+    } else {
+      h += `<section class="insWide"><h4>Costs</h4><div class="insEmpty">No prices yet. Add a price per unit on Stock In (or edit the item) and cost charts appear here.</div></section>`;
+    }
 
     // trend for one item
     const pick = itemId && R.rows.find(r => r.it.id === itemId) ? R.rows.find(r => r.it.id === itemId) : (R.top[0] || null);
@@ -914,8 +974,8 @@
       <div class="insAbc"><div><b>A · ${A}</b><span>items = 80% of all issues</span></div><div><b>B · ${B}</b><span>next 15%</span></div><div><b>C · ${C}</b><span>last 5%</span></div></div>
       ${R.abc.A.length ? `<p class="insNote"><b>Never run out of these (class A):</b> ${R.abc.A.slice(0, 12).map(nm).join(', ')}${R.abc.A.length > 12 ? '…' : ''}</p>` : ''}</section>`;
 
-    h += `<section><h4>Not moving — stock but no use in 180 days (${R.dead.length})</h4>${tbl([['Item'], ['On hand', 1], ['Idle', 1]],
-      R.dead.slice(0, 12).map(r => `<tr><td>${nm(r)}</td><td class="num">${fmtQty(r.it.stat.onHand)} ${esc(r.it.uom)}</td><td class="num">${r.idle == null ? 'never used' : r.idle + ' d'}</td></tr>`).join(''))}
+    h += `<section><h4>Not moving — stock but no use in 180 days (${R.dead.length})</h4>${tbl([['Item'], ['On hand', 1], ['Value', 1], ['Idle', 1]],
+      R.dead.slice(0, 12).map(r => `<tr><td>${nm(r)}</td><td class="num">${fmtQty(r.it.stat.onHand)} ${esc(r.it.uom)}</td><td class="num">${R.priceById.get(r.it.id) != null ? esc(peso(R.priceById.get(r.it.id) * r.it.stat.onHand)) : ''}</td><td class="num">${r.idle == null ? 'never used' : r.idle + ' d'}</td></tr>`).join(''))}
       <p class="insNote">Candidates to stop buying, or to check whether the count is right.</p></section>`;
 
     h += `<section><h4>Set a minimum level for these</h4>${tbl([['Item'], ['Issued', 1], ['On hand', 1]],
@@ -1004,21 +1064,22 @@
       const list = S.items.filter(i => !i.archived && (!cat || i.category === cat))
         .sort((a, b) => a.category.localeCompare(b.category) || lc(a.name).localeCompare(lc(b.name)));
       const cols = [{ label: 'Code' }, { label: 'Item' }, { label: 'Unit' }, { label: 'On hand', num: true }, { label: 'Location' }];
-      if (count) cols.push({ label: 'Counted' }, { label: 'Remarks' }); else { cols.push({ label: 'Status' }); }
+      if (count) cols.push({ label: 'Counted' }, { label: 'Remarks' }); else { cols.push({ label: 'Price', num: true }, { label: 'Value', num: true }, { label: 'Status' }); }
       let rows = '', last = '';
       list.forEach(i => {
         if (i.category !== last) { last = i.category; rows += `<tr class="cat"><td colspan="${cols.length}">${esc(last)}</td></tr>`; }
         const st = i.stat.status;
         rows += `<tr><td>${esc(i.code)}</td><td>${esc(i.name)}</td><td>${esc(i.uom)}</td><td class="num">${fmtQty(i.stat.onHand)}</td><td>${esc(i.location)}</td>` +
-          (count ? '<td class="blank"></td><td class="blank"></td>' : `<td class="${st === 'low' ? 'low' : st === 'out' ? 'out' : ''}">${esc(STATUS_LABEL[st] || st)}</td>`) + '</tr>';
+          (count ? '<td class="blank"></td><td class="blank"></td>' : `<td class="num">${esc(pesoOr(i.price))}</td><td class="num">${hasPrice(i.price) ? esc(peso(i.price * Math.max(0, i.stat.onHand))) : ''}</td><td class="${st === 'low' ? 'low' : st === 'out' ? 'out' : ''}">${esc(STATUS_LABEL[st] || st)}</td>`) + '</tr>';
       });
-      const inner = rpTable(cols, rows) + (count ? '<div class="sign"><div>Counted by / date</div><div>Checked by / date</div></div>' : '');
+      const pv = list.filter(i => hasPrice(i.price));
+      const inner = rpTable(cols, rows) + (!count && pv.length ? `<p><b>Stock value: ${esc(peso(pv.reduce((a, i) => a + i.price * Math.max(0, i.stat.onHand), 0)))}</b> (${pv.length} of ${list.length} items have a price)</p>` : '') + (count ? '<div class="sign"><div>Counted by / date</div><div>Checked by / date</div></div>' : '');
       return { title: count ? 'Stock count sheet' : 'Stock list', html: reportDoc(count ? 'Stock count sheet' : 'Stock list', (cat || 'All categories') + ' · ' + list.length + ' items', inner), landscape: false };
     }
     if (kind === 'reorder') {
       const list = S.items.filter(i => i.stat.status === 'low' || i.stat.status === 'out').sort((a, b) => STATUS_ORDER[a.stat.status] - STATUS_ORDER[b.stat.status] || lc(a.name).localeCompare(lc(b.name)));
-      const rows = list.map(i => `<tr><td>${esc(i.code)}</td><td>${esc(i.name)}</td><td class="num">${fmtQty(i.stat.onHand)} ${esc(i.uom)}</td><td class="num">${i.stat.rop ? fmtQty(i.stat.rop) : ''}</td><td class="num"><b>${fmtQty(i.stat.suggest)} ${esc(i.uom)}</b></td><td>${esc(i.supplier)}</td><td class="${i.stat.status === 'out' ? 'out' : 'low'}">${esc(STATUS_LABEL[i.stat.status])}</td></tr>`).join('');
-      return { title: 'Reorder list', html: reportDoc('Reorder list', list.length + ' items need ordering', rpTable([{ label: 'Code' }, { label: 'Item' }, { label: 'On hand', num: true }, { label: 'Reorder point', num: true }, { label: 'Suggested order', num: true }, { label: 'Supplier' }, { label: 'Status' }], rows)), landscape: false };
+      const rows = list.map(i => `<tr><td>${esc(i.code)}</td><td>${esc(i.name)}</td><td class="num">${fmtQty(i.stat.onHand)} ${esc(i.uom)}</td><td class="num">${i.stat.rop ? fmtQty(i.stat.rop) : ''}</td><td class="num"><b>${fmtQty(i.stat.suggest)} ${esc(i.uom)}</b></td><td class="num">${hasPrice(i.price) ? esc(peso(i.price * i.stat.suggest)) : ''}</td><td>${esc(i.supplier)}</td><td class="${i.stat.status === 'out' ? 'out' : 'low'}">${esc(STATUS_LABEL[i.stat.status])}</td></tr>`).join('');
+      return { title: 'Reorder list', html: reportDoc('Reorder list', list.length + ' items need ordering', rpTable([{ label: 'Code' }, { label: 'Item' }, { label: 'On hand', num: true }, { label: 'Reorder point', num: true }, { label: 'Suggested order', num: true }, { label: 'Est. cost', num: true }, { label: 'Supplier' }, { label: 'Status' }], rows)), landscape: false };
     }
     if (kind === 'loans') {
       const list = S.loans.filter(l => l.open > 0).sort((a, b) => a.dateOut.localeCompare(b.dateOut));
@@ -1398,10 +1459,12 @@
     copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(i.code); say('Code copied.'); } catch (e) { say('Could not copy.'); } });
     head.append(copy);
     c.append(head, E('div', '', i.name));
+    if (i.photo) { const im = document.createElement('img'); im.src = photoUrl(i.photo); im.alt = i.name; im.style.cssText = 'max-width:100%;max-height:220px;border-radius:10px;margin:8px 0;display:block'; c.append(im); }
     const facts = E('div', 'invFacts');
     const add = (k, v) => { if (v === '' || v == null) return; const x = E('div'); x.append(E('span', '', k), document.createTextNode(String(v))); facts.appendChild(x); };
     add('Category', i.category); add('Group', i.group);
     add('On hand', fmtQty(i.stat.onHand) + ' ' + i.uom);
+    add('Price per unit', pesoOr(i.price)); add('Value in stock', hasPrice(i.price) ? peso(i.price * Math.max(0, i.stat.onHand)) : '');
     add('Reorder point', i.stat.rop ? fmtQty(i.stat.rop) + ' ' + i.uom : '');
     add('Suggested order', i.stat.suggest ? fmtQty(i.stat.suggest) + ' ' + i.uom : '');
     add('Daily use (90 d)', i.stat.avgDaily ? String(i.stat.avgDaily) : '');

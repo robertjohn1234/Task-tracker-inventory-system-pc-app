@@ -1245,7 +1245,7 @@
       { label: 'Form heading (company, department)…', run: () => K.openFormHeading() },
       { label: 'Open data and backups folder', run: () => api.invOpenFolder() },
       { label: 'Your name (saved on entries)…', run: () => K.askName() },
-      { label: S() && S().pinSet ? 'Admin PIN — change…' : 'Admin PIN — set…', run: () => K.setPinDialog() }
+      { label: S() && S().pinMissing ? 'Admin PIN — file missing (ask the boss)' : S() && S().pinSet ? 'Admin PIN — change…' : 'Admin PIN — set…', run: () => K.setPinDialog() }
     ]);
   });
   const setLayout = (v) => { layout = v; try { localStorage.setItem('wh-tools-layout', v); } catch (e) {} render(); };
@@ -1264,5 +1264,6 @@
     else say('No single tool matches "' + v + '".');
   });
 
+  K.photoPicker = photoPicker;   // the Consumables screen uses the same picture picker
   window.ToolsUI = { render };
 })();
