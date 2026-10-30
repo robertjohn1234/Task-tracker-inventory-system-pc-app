@@ -30,3 +30,16 @@ test('parseExport skips a movement for an item that is not on the Stock sheet', 
   assert.equal(p.movements.length, 2);
   assert.ok(p.issues.some(i => i.level === 'skip'));
 });
+
+test('prices travel through the app\'s own Excel export and import', () => {
+  const core = require('../src/main/inventory/inventory-core.js');
+  const stock = [['Code', 'Item', 'Category', 'Unit', 'On hand', 'Price'], ['CON-0001', 'Gloves', 'Consumables', 'pcs', 6, 85.5], ['CON-0002', 'Tape', 'Consumables', 'pcs', 2, '']];
+  const moves = [['Date', 'Code', 'Item', 'In / Out', 'Qty', 'Price / unit'], ['2026-10-01', 'CON-0001', 'Gloves', 'IN', 10, 85.5], ['2026-10-02', 'CON-0001', 'Gloves', 'OUT', 4, 99]];
+  const p = imp.parseExport(stock, moves, []);
+  assert.equal(p.items[0].price, 85.5); assert.equal(p.items[1].price, null);
+  assert.equal(p.movements[0].price, 85.5); assert.equal(p.movements[1].price, null, 'a stock-out never carries a price');
+  const d = core.emptyData();
+  imp.applyParsed(d, p, {}, 't');
+  assert.equal(d.items.find(i => i.name === 'Gloves').price, 85.5);
+  assert.equal(d.movements.find(m => m.dir === 'in' && m.reason !== 'Opening balance').price, 85.5);
+});

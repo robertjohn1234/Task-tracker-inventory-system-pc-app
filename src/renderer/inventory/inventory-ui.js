@@ -1298,17 +1298,18 @@
     date: 'date', 'date out': 'date', 'date in': 'date', 'in/out': 'dir', inout: 'dir', type: 'dir', direction: 'dir', movement: 'dir',
     code: 'item', item: 'item', name: 'item', 'item name': 'item', description: 'item', material: 'item',
     qty: 'qty', quantity: 'qty', 'qty.': 'qty', person: 'party', department: 'party', 'department / person': 'party', party: 'party',
-    'taken by': 'party', 'issued to': 'party', who: 'party', ref: 'ref', reference: 'ref', 'ref no': 'ref', 'ref no.': 'ref', remarks: 'remarks', reason: 'reason'
+    'taken by': 'party', 'issued to': 'party', who: 'party', ref: 'ref', reference: 'ref', 'ref no': 'ref', 'ref no.': 'ref', remarks: 'remarks', reason: 'reason',
+    price: 'price', 'unit price': 'price', 'price / unit': 'price', cost: 'price', 'unit cost': 'price'
   };
 
   function openBulk() {
     const d = dialog('Bulk entry — many stock in / out lines at once', { wide: true });
     d.dlg.classList.add('invBulkDlg');
     const c = d.content;
-    c.append(E('div', 'invNote', 'Type line by line (Enter in the last box adds a new line) or paste rows copied from Excel. Pasting a table: columns in this order — Date, In/Out, Item (code or name), Qty, Department, Ref. A first row with headings is also understood.'));
+    c.append(E('div', 'invNote', 'Type line by line (Enter in the last box adds a new line) or paste rows copied from Excel. Pasting a table: columns in this order — Date, In/Out, Item (code or name), Qty, Department, Ref, Unit price (optional, for IN lines). A first row with headings is also understood.'));
     const tbl = E('table', 'invBulk');
     const thead = E('thead'); const hr = E('tr');
-    ['Date', 'In / Out', 'Item', 'Qty', 'Department', 'Reference', ''].forEach(h => hr.appendChild(E('th', '', h)));
+    ['Date', 'In / Out', 'Item', 'Qty', 'Department', 'Reference', 'Unit price ₱', ''].forEach(h => hr.appendChild(E('th', '', h)));
     thead.appendChild(hr); tbl.appendChild(thead);
     const tb = E('tbody'); tbl.appendChild(tb);
     const wrap = E('div', 'invBulkWrap'); wrap.appendChild(tbl);
@@ -1340,12 +1341,13 @@
       const qty = inp('number', v.qty);
       const party = inp('text', v.party, { maxLength: 120 }); party.setAttribute('list', 'invParties');
       const ref = inp('text', v.ref, { maxLength: 80 });
+      const price = inp('number', v.price == null ? '' : v.price); price.placeholder = 'IN only';
       const info = E('div', 'invSub');
       const del = E('button', '', '✕'); del.type = 'button'; del.title = 'Remove this line';
       const cell = (x) => { const t = E('td'); t.appendChild(x); return t; };
       const itemCell = cell(item); itemCell.appendChild(info);
-      tr.append(cell(date), cell(dir), itemCell, cell(qty), cell(party), cell(ref), cell(del));
-      const row = { tr, date, dir, item, qty, party, ref, info };
+      tr.append(cell(date), cell(dir), itemCell, cell(qty), cell(party), cell(ref), cell(price), cell(del));
+      const row = { tr, date, dir, item, qty, party, ref, price, info };
       const upd = () => {
         const it = findItemLoose(item.value);
         row.it = it;
@@ -1376,7 +1378,7 @@
       const lines = text.replace(/\r/g, '').split('\n').filter(l => l.trim() !== '');
       if (!lines.length) return 0;
       let cols = lines[0].split('\t');
-      let map = ['date', 'dir', 'item', 'qty', 'party', 'ref'];
+      let map = ['date', 'dir', 'item', 'qty', 'party', 'ref', 'price'];
       const heads = cols.map(x => HEAD_MAP[x.trim().toLowerCase()]);
       if (heads.filter(Boolean).length >= 2 && heads.includes('item')) { map = heads; lines.shift(); }
       let n = 0;
@@ -1394,6 +1396,7 @@
         target.qty.value = String(rec.qty || '').replace(/[^0-9.]/g, '');
         if (rec.party != null) target.party.value = rec.party;
         if (rec.ref != null) target.ref.value = rec.ref;
+        if (rec.price != null) target.price.value = String(rec.price).replace(/[^0-9.]/g, '');
         target.upd(); n++;
       });
       return n;
@@ -1424,7 +1427,7 @@
       });
       if (bad) { d.say(`${bad} line${bad === 1 ? ' needs' : 's need'} an item. Fix the red lines, then Save again.`, true); return; }
       const res = await api.invMoveBulk(send.map(r => ({
-        itemId: r.it.id, dir: r.dir.value, qty: r.qty.value, date: r.date.value, party: r.party.value, ref: r.ref.value
+        itemId: r.it.id, dir: r.dir.value, qty: r.qty.value, date: r.date.value, party: r.party.value, ref: r.ref.value, price: r.dir.value === 'in' ? r.price.value : ''
       })), { allowNegative: neg.checked });
       if (!res.ok) { d.say(res.error, true); return; }
       useState(res);
@@ -1561,8 +1564,10 @@
       if (!goBtn) {
         goBtn = d.button('Import now', 'primary', async () => {
           goBtn.disabled = true; d.say('Importing…');
-          const r = await api.invImportApply({ openingDate: ctrl.od.value, replace: ctrl.replace ? ctrl.replace.checked : false, includeLoans: ctrl.loans ? ctrl.loans.checked : true });
+          const body = { openingDate: ctrl.od.value, replace: ctrl.replace ? ctrl.replace.checked : false, includeLoans: ctrl.loans ? ctrl.loans.checked : true };
+          const r = await withPin((pin) => api.invImportApply(Object.assign({}, body, { pin })), 'Import from Excel');
           goBtn.disabled = false;
+          if (r.canceled) { d.say(''); return; }
           if (!r.ok) { d.say(r.error, true); return; }
           useState(r); d.close();
           const x = r.result;
@@ -1586,7 +1591,7 @@
     const c = d.content;
     c.append(E('p', '', '1. On the PC that has the newest entries, press "Send my inventory file", then email the file or copy it to a USB stick.'));
     c.append(E('p', '', '2. On the other PC, press "Receive a file" and choose it. The two inventories are combined: nothing is lost, entries from both PCs are kept, and if you both changed the same item the newer change wins.'));
-    c.append(E('p', 'invNote', 'You can send and receive as often as you like. Receiving the same file twice does no harm. A backup is saved before every merge.'));
+    c.append(E('p', 'invNote', 'You can send and receive as often as you like. Receiving the same file twice does no harm. You first see what the file would change, and the admin PIN is needed to apply it. A backup is saved before every merge.'));
     const out = E('div', 'invList'); out.style.maxHeight = '220px'; out.hidden = true;
     c.append(out);
     d.button('Send my inventory file…', 'primary', async () => {
@@ -1596,11 +1601,7 @@
       out.hidden = false; out.innerHTML = '';
       out.append(E('div', 'invOk', 'File saved:'), E('div', '', r.path), E('div', 'invNote', `${r.counts.items} items, ${r.counts.movements} movements, ${r.counts.loans} loans.`));
     });
-    d.button('Receive a file…', '', async () => {
-      const r = await api.invSyncImport();
-      if (r.canceled) return;
-      if (!r.ok) { d.say(r.error, true); return; }
-      useState(r);
+    const showResult = (r) => {
       const x = r.report;
       out.hidden = false; out.innerHTML = '';
       out.append(E('div', 'invOk', 'Merged' + (r.from ? ' (file from ' + r.from + ')' : '') + ':'));
@@ -1611,6 +1612,34 @@
         out.append(E('div', 'invWarn', 'Two PCs gave different items the same code. These items got a new code (re-print their labels if you already did):'));
         x.renamed.forEach(n => out.append(E('div', 'invWarn', `${n.name}: ${n.from} → ${n.to}`)));
       }
+    };
+    d.button('Receive a file…', '', async () => {
+      const r = await api.invSyncImport();
+      if (r.canceled) return;
+      if (!r.ok) { d.say(r.error, true); return; }
+      const x = r.report, im = r.impact;
+      out.hidden = false; out.innerHTML = '';
+      out.append(E('div', 'invOk', 'Nothing is changed yet. This is what the file would do' + (r.from ? ' (from ' + r.from + ')' : '') + ':'));
+      out.append(E('div', '', `Items: ${x.items.added} new, ${x.items.updated} changed`));
+      out.append(E('div', '', `Stock movements: ${x.movements.added} new, ${x.movements.updated} changed`));
+      out.append(E('div', '', `Loans: ${x.loans.added} new, ${x.loans.updated} changed · Repairs: ${x.repairs.added} new, ${x.repairs.updated} changed`));
+      if (im.toolRemovals) out.append(E('div', 'invWarn', `⚠ ${im.toolRemovals} removal${im.toolRemovals === 1 ? '' : 's'} of tool units come with this file.`));
+      if (im.deletedTotal) out.append(E('div', 'invWarn', `⚠ ${im.deletedTotal} existing record${im.deletedTotal === 1 ? '' : 's'} would be deleted (${[['items', 'items'], ['movements', 'movements'], ['loans', 'loans'], ['repairs', 'repairs']].filter(([k]) => im.deleted[k]).map(([k, l]) => im.deleted[k] + ' ' + l).join(', ')}).`));
+      if (x.renamed.length) out.append(E('div', 'invWarn', `${x.renamed.length} item code${x.renamed.length === 1 ? '' : 's'} would change because two PCs used the same code.`));
+      const row = E('div', 'invRow');
+      const go = E('button', 'primary', 'Apply (admin PIN needed)'); go.type = 'button';
+      const no = E('button', '', 'Do not apply'); no.type = 'button';
+      row.append(go, no); out.append(row);
+      no.addEventListener('click', () => { out.hidden = true; out.innerHTML = ''; });
+      go.addEventListener('click', async () => {
+        go.disabled = true;
+        const a = await withPin((pin) => api.invSyncApply(pin), 'Receive an inventory file');
+        go.disabled = false;
+        if (a.canceled) return;
+        if (!a.ok) { d.say(a.error, true); return; }
+        useState(a); d.say('');
+        showResult(a);
+      });
     });
     d.button('Close', '', d.close);
   }

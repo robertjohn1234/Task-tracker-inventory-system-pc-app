@@ -6,7 +6,7 @@ const fs = require('fs'), os = require('os'), path = require('path'), Module = r
 const { spawnSync } = require('child_process');
 
 const handlers = {};
-const stub = { ipcMain: { handle: (n, f) => { handlers[n] = f; } }, dialog: {}, shell: {}, BrowserWindow: class {} };
+const stub = { ipcMain: { handle: (n, f) => { handlers[n] = f; } }, dialog: { showOpenDialog: async () => ({ canceled: true }) }, shell: {}, BrowserWindow: class {} };
 const orig = Module._load;
 Module._load = function (req, ...a) { return req === 'electron' ? stub : orig.call(this, req, ...a); };
 const core = require('../src/main/inventory/inventory-core.js');
@@ -92,4 +92,47 @@ test('make-pin.js works without --out', () => {
   const r = spawnSync(process.execPath, [MAKE, '54321'], { encoding: 'utf8', cwd: dir });
   assert.equal(r.status, 0, r.stderr);
   assert.ok(fs.existsSync(path.join(dir, 'admin-pin.json')));
+});
+
+// ---------- receiving a file from another PC needs a preview and the PIN ----------
+test('receiving a file: a preview changes nothing, applying needs the admin PIN', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wh-sync-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wh-home-'));
+  const seed = fs.mkdtempSync(path.join(os.tmpdir(), 'wh-seed-'));
+  spawnSync(process.execPath, [MAKE, '1357', '--out', seed]);
+  registerInventory(stub.ipcMain, { userDataDir: () => home, getWindow: () => null, seedDirs: () => [seed] });
+  const mine = await handlers['inv-item-save']({}, { name: 'Local drill', uom: 'pcs', category: core.TOOLS, startQty: 3, photo: 'ph-0123456789abcdef0123.jpg' });
+  assert.equal(mine.ok, true, mine.error);
+
+  // a file from "another PC": a tool with a removal, and a record that deletes one of mine
+  const other = core.emptyData();
+  const t = core.saveItem(other, { name: 'Remote saw', uom: 'pcs', category: core.TOOLS, startQty: 5, photo: 'ph-0123456789abcdef0123.jpg' }, 'x');
+  core.addMovement(other, { itemId: t.item.id, dir: 'out', qty: 1, reason: 'Lost', remarks: 'Missing at site', approvedBy: 'Boss' }, 'x');
+  const localItem = (await handlers['inv-load']({}, 'tools')).state.items.find(i => i.name === 'Local drill');
+  other.items.push(Object.assign({}, localItem, { stat: undefined, deleted: true, updatedAt: '2999-01-01T00:00:00.000Z' }));
+  const file = path.join(dir, 'other.whinv');
+  fs.writeFileSync(file, JSON.stringify(Object.assign({ from: 'OTHER-PC', exportedAt: new Date().toISOString() }, other)));
+  stub.dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] });
+
+  const before = JSON.stringify((await handlers['inv-load']({}, 'tools')).state.items.map(i => i.id));
+  const pre = await handlers['inv-sync-import']({});
+  assert.equal(pre.ok, true, pre.error);
+  assert.equal(pre.preview, true);
+  assert.equal(pre.impact.toolRemovals, 1);
+  assert.equal(pre.impact.deleted.items, 1);
+  assert.equal(JSON.stringify((await handlers['inv-load']({}, 'tools')).state.items.map(i => i.id)), before, 'the preview changed nothing');
+
+  assert.equal((await handlers['inv-sync-apply']({}, '')).code, 'PIN');
+  assert.equal((await handlers['inv-sync-apply']({}, '0000')).code, 'PIN_WRONG');
+  assert.equal(JSON.stringify((await handlers['inv-load']({}, 'tools')).state.items.map(i => i.id)), before, 'still nothing changed');
+  const done = await handlers['inv-sync-apply']({}, '1357');
+  assert.equal(done.ok, true, done.error);
+  const names = done.state.items.map(i => i.name);
+  assert.ok(names.includes('Remote saw') && !names.includes('Local drill'));
+  assert.equal((await handlers['inv-sync-apply']({}, '1357')).ok, false, 'the same preview cannot be applied twice');
+});
+
+test('importing from Excel is blocked without the PIN', async () => {
+  const r = await handlers['inv-import-apply']({}, { pin: '' });
+  assert.equal(r.ok, false);   // nothing chosen yet: asks for the file first
 });

@@ -114,3 +114,10 @@ merge keeps the newest `updatedAt` per record.
   Values (stock value, cost issued, reorder estimate) use each item's latest price and always say how many items are priced.
 - A picture on a consumable is optional (`photoPicker` is shared from `tools-ui.js` as `InvKit.photoPicker`). The Stock filter has "Missing price" and "Missing picture".
 - Insights (consumables) gained cost figures: stock value, cost issued, purchases, cost by month, most costly items, where the money sits, value of items not moving.
+
+## Receiving files and importing needs the admin PIN
+
+- **Send / receive** (`inv-sync-import` + `inv-sync-apply` in `inventory.js`): step 1 reads the file and works out what it WOULD do on a copy of the data (`mergeImpact`: new / changed records, tool removals that come with it, existing records it would delete). Nothing is saved.
+  Step 2 (`inv-sync-apply`) needs the admin PIN, makes a backup, then merges. The same preview cannot be applied twice.
+- **Excel import** (`inv-import-apply`) also needs the PIN.
+- Prices travel in the app's own Excel export / import (Stock: Price, Value; Movements: Price / unit; Tools register). Bulk entry has a "Unit price" column for IN lines.

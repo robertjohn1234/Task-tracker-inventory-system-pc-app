@@ -85,6 +85,7 @@ contextBridge.exposeInMainWorld('api', {
   invImportApply: (opts) => ipcRenderer.invoke('inv-import-apply', opts),
   invSyncExport: () => ipcRenderer.invoke('inv-sync-export'),
   invSyncImport: () => ipcRenderer.invoke('inv-sync-import'),
+  invSyncApply: (pin) => ipcRenderer.invoke('inv-sync-apply', pin),
   invReportPdf: (html, opts) => ipcRenderer.invoke('inv-report-pdf', html, opts),
   invReportPrint: (html, opts) => ipcRenderer.invoke('inv-report-print', html, opts),
   aiGet: () => ipcRenderer.invoke('ai-get'),

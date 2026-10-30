@@ -443,9 +443,11 @@ function registerInventory(ipcMain, ctx) {
 
   handle('inv-import-apply', (e, opts) => {
     if (!pending) return { ok: false, error: 'Please choose the Excel file again.' };
+    const g = needPin(opts && opts.pin, `Import from Excel (${pending.counts ? pending.counts.items + ' items' : ''})`);
+    if (g) return g;
     const d = load();
     backup();
-    const res = imp.applyParsed(d, pending, opts || {}, who());
+    const res = imp.applyParsed(d, pending, without(opts || {}, 'pin'), who());
     pending = null;
     save();
     return { ok: true, result: res, state: state() };
@@ -514,6 +516,21 @@ function registerInventory(ipcMain, ctx) {
     };
   });
 
+  // Receiving a file from another PC: step 1 only reads it and shows what WOULD change (nothing is saved),
+  // step 2 needs the admin PIN. A file can bring in removals and deletions, so it is never merged silently.
+  let pendingSync = null;
+  function mergeImpact(before, after) {
+    const toolIds = new Set(after.items.filter(i => i.category === core.TOOLS).map(i => i.id));
+    const liveBefore = (k) => new Set((before[k] || []).filter(r => !r.deleted).map(r => r.id));
+    const deleted = {};
+    for (const k of ['items', 'movements', 'loans', 'repairs']) {
+      const was = liveBefore(k);
+      deleted[k] = (after[k] || []).filter(r => r.deleted && was.has(r.id)).length;
+    }
+    const mvBefore = liveBefore('movements');
+    const toolRemovals = after.movements.filter(m => !m.deleted && m.dir === 'out' && toolIds.has(m.itemId) && !mvBefore.has(m.id)).length;
+    return { deleted, deletedTotal: Object.values(deleted).reduce((a, b) => a + b, 0), toolRemovals };
+  }
   handle('inv-sync-import', async () => {
     const r = await dialog.showOpenDialog(ctx.getWindow(), {
       title: 'Choose the inventory file you received',
@@ -525,10 +542,24 @@ function registerInventory(ipcMain, ctx) {
     try { raw = JSON.parse(fs.readFileSync(r.filePaths[0], 'utf8')); }
     catch (err) { return { ok: false, error: 'That file could not be read. It may be damaged or not an inventory file.' }; }
     const d = load();
+    const copy = JSON.parse(JSON.stringify(d));
+    let report;
+    try { report = core.mergeData(copy, raw); }
+    catch (err) { return { ok: false, error: err.message }; }
+    pendingSync = raw;
+    return { ok: true, preview: true, report, impact: mergeImpact(d, copy), from: raw.from || '', exportedAt: raw.exportedAt || '' };
+  });
+  handle('inv-sync-apply', (e, pin) => {
+    if (!pendingSync) return { ok: false, error: 'Please choose the file again.' };
+    const raw = pendingSync;
+    const g = needPin(pin, `Receive an inventory file from ${raw.from || 'another PC'}`);
+    if (g) return g;
+    const d = load();
     backup();
     let report;
     try { report = core.mergeData(d, raw); }
     catch (err) { return { ok: false, error: err.message }; }
+    pendingSync = null;
     migratePhotos(d);
     save();
     return { ok: true, report, from: raw.from || '', exportedAt: raw.exportedAt || '', state: state() };
@@ -567,13 +598,15 @@ function registerInventory(ipcMain, ctx) {
     const stockRows = st.items.map(i => ({
       code: i.code, name: i.name, cat: cat(i), group: i.group, uom: i.uom,
       onHand: i.stat.onHand, onLoan: i.stat.onLoan, avail: i.stat.available, min: i.minQty || null, rop: i.stat.rop || null,
-      status: statusText[i.stat.status] || '', loc: i.location, sup: i.supplier, last: asDate(i.stat.last)
+      status: statusText[i.stat.status] || '', loc: i.location, sup: i.supplier, last: asDate(i.stat.last),
+      price: typeof i.price === 'number' ? i.price : null, value: typeof i.price === 'number' ? Math.round(i.price * Math.max(0, i.stat.onHand) * 100) / 100 : null
     }));
     const ws1 = sheet('Stock', [
       { h: 'Code', k: 'code', w: 12 }, { h: 'Item', k: 'name', w: 44 }, { h: 'Category', k: 'cat', w: 18 }, { h: 'Group', k: 'group', w: 18 },
       { h: 'Unit', k: 'uom', w: 8 }, { h: 'On hand', k: 'onHand', w: 10 }, { h: 'Borrowed', k: 'onLoan', w: 10 }, { h: 'Available', k: 'avail', w: 10 },
       { h: 'Min level', k: 'min', w: 10 }, { h: 'Reorder point', k: 'rop', w: 12 }, { h: 'Status', k: 'status', w: 16 },
-      { h: 'Location', k: 'loc', w: 22 }, { h: 'Supplier', k: 'sup', w: 22 }, { h: 'Last movement', k: 'last', w: 14, fmt: 'yyyy-mm-dd' }
+      { h: 'Location', k: 'loc', w: 22 }, { h: 'Supplier', k: 'sup', w: 22 }, { h: 'Last movement', k: 'last', w: 14, fmt: 'yyyy-mm-dd' },
+      { h: 'Price', k: 'price', w: 11, fmt: '#,##0.00' }, { h: 'Value', k: 'value', w: 13, fmt: '#,##0.00' }
     ], stockRows);
     ws1.eachRow((row, n) => {
       if (n === 1) return;
@@ -585,10 +618,11 @@ function registerInventory(ipcMain, ctx) {
     sheet('Movements', [
       { h: 'Date', k: 'date', w: 12, fmt: 'yyyy-mm-dd' }, { h: 'Code', k: 'code', w: 12 }, { h: 'Item', k: 'name', w: 44 },
       { h: 'In / Out', k: 'dir', w: 9 }, { h: 'Qty', k: 'qty', w: 9 }, { h: 'Unit', k: 'uom', w: 8 }, { h: 'Reason', k: 'reason', w: 24 },
-      { h: 'Department / person', k: 'party', w: 26 }, { h: 'Reference', k: 'ref', w: 16 }, { h: 'Remarks', k: 'remarks', w: 36 }, { h: 'Entered by', k: 'by', w: 14 }
+      { h: 'Department / person', k: 'party', w: 26 }, { h: 'Reference', k: 'ref', w: 16 }, { h: 'Remarks', k: 'remarks', w: 36 }, { h: 'Entered by', k: 'by', w: 14 },
+      { h: 'Price / unit', k: 'price', w: 12, fmt: '#,##0.00' }
     ], st.movements.slice().sort((a, b) => (b.date + b.createdAt).localeCompare(a.date + a.createdAt)).map(m => ({
       date: asDate(m.date), code: m.itemCode, name: m.itemName, dir: m.dir === 'in' ? 'IN' : 'OUT', qty: m.qty, uom: m.uom,
-      reason: m.reason, party: m.party, ref: m.ref, remarks: m.remarks, by: m.by
+      reason: m.reason, party: m.party, ref: m.ref, remarks: m.remarks, by: m.by, price: m.dir === 'in' && typeof m.price === 'number' ? m.price : null
     })));
 
     const openLoans = st.loans.filter(l => l.open > 0);
@@ -620,10 +654,12 @@ function registerInventory(ipcMain, ctx) {
     sheet('Tools register', [
       { h: 'Code', k: 'code', w: 12 }, { h: 'Tool / equipment', k: 'name', w: 44 }, { h: 'Unit', k: 'uom', w: 8 }, { h: 'Qty', k: 'qty', w: 8 },
       { h: 'Borrowed', k: 'onLoan', w: 10 }, { h: 'Available', k: 'avail', w: 10 }, { h: 'Serial / tag', k: 'serial', w: 22 }, { h: 'Condition', k: 'cond', w: 14 },
-      { h: 'Calibration due', k: 'cal', w: 15, fmt: 'yyyy-mm-dd' }, { h: 'Location', k: 'loc', w: 24 }, { h: 'Notes', k: 'notes', w: 36 }
+      { h: 'Calibration due', k: 'cal', w: 15, fmt: 'yyyy-mm-dd' }, { h: 'Location', k: 'loc', w: 24 }, { h: 'Notes', k: 'notes', w: 36 },
+      { h: 'Price', k: 'price', w: 11, fmt: '#,##0.00' }, { h: 'Value', k: 'value', w: 13, fmt: '#,##0.00' }
     ], st.items.filter(i => i.category === core.TOOLS).map(i => ({
       code: i.code, name: i.name, uom: i.uom, qty: i.stat.onHand, onLoan: i.stat.onLoan, avail: i.stat.available, serial: i.serial,
-      cond: i.condition, cal: asDate(i.calibrationDue), loc: i.location, notes: i.notes
+      cond: i.condition, cal: asDate(i.calibrationDue), loc: i.location, notes: i.notes,
+      price: typeof i.price === 'number' ? i.price : null, value: typeof i.price === 'number' ? Math.round(i.price * Math.max(0, i.stat.onHand) * 100) / 100 : null
     })));
 
     try { await wb.xlsx.writeFile(r.filePath); }

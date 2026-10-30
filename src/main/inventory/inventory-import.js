@@ -283,7 +283,7 @@ function parseExport(stockRows, moveRows, loanRows) {
   const H = stockRows[hs];
   const col = (n) => findCol(H, n);
   const c = { code: col('code'), name: col('item'), cat: col('category'), group: col('group'), uom: col('unit'), on: col('on hand'),
-    min: col('min level'), status: col('status'), loc: col('location'), sup: col('supplier') };
+    min: col('min level'), status: col('status'), loc: col('location'), sup: col('supplier'), price: col('price') };
 
   const items = [], byCode = new Map(), byName = new Map();
   for (let i = hs + 1; i < stockRows.length; i++) {
@@ -299,6 +299,7 @@ function parseExport(stockRows, moveRows, loanRows) {
       group: c.group >= 0 ? cellText(r[c.group]) : '', uom: c.uom >= 0 ? cellText(r[c.uom]) : '',
       location: c.loc >= 0 ? cellText(r[c.loc]) : '', supplier: c.sup >= 0 ? cellText(r[c.sup]) : '',
       minQty: c.min >= 0 ? (num(r[c.min]) || 0) : 0,
+      price: c.price >= 0 ? num(r[c.price]) : null,
       archived: c.status >= 0 && /^archived$/i.test(cellText(r[c.status])),
       onHand: num(r[c.on]) || 0, net: 0, openingQty: 0, rowNo: i + 1
     };
@@ -316,7 +317,7 @@ function parseExport(stockRows, moveRows, loanRows) {
     const M = moveRows[hm];
     const m = (n) => findCol(M, n);
     const k = { date: m('date'), code: m('code'), name: m('item'), dir: m('in / out'), qty: m('qty'), reason: m('reason'),
-      party: m('department / person'), ref: m('reference'), remarks: m('remarks'), by: m('entered by') };
+      party: m('department / person'), ref: m('reference'), remarks: m('remarks'), by: m('entered by'), price: m('price / unit') };
     for (let i = hm + 1; i < moveRows.length; i++) {
       const r = moveRows[i] || [];
       if (r.every(v => cellText(v) === '')) continue;
@@ -336,7 +337,7 @@ function parseExport(stockRows, moveRows, loanRows) {
         item, itemName: item.name, dir, qty, date,
         reason: k.reason >= 0 ? cellText(r[k.reason]) : '', party: k.party >= 0 ? cellText(r[k.party]) : '',
         ref: k.ref >= 0 ? cellText(r[k.ref]) : '', remarks: k.remarks >= 0 ? cellText(r[k.remarks]) : '',
-        by: k.by >= 0 ? cellText(r[k.by]) : '', rowNo: i + 1
+        by: k.by >= 0 ? cellText(r[k.by]) : '', price: k.price >= 0 && dir === 'in' ? num(r[k.price]) : null, rowNo: i + 1
       });
     }
   } else {
@@ -424,7 +425,7 @@ function applyParsed(data, parsed, opts, by) {
     if (!code) code = core.nextCode(data, category);
     const rec = core.cleanItemRecord({
       id, code, name: it.name, category, group: it.group, uom: it.uom || 'pcs',
-      location: it.location, supplier: it.supplier, minQty: it.minQty, archived: it.archived,
+      location: it.location, supplier: it.supplier, minQty: it.minQty, price: it.price, archived: it.archived,
       notes: it.notes, leadTimeDays: it.lead, src, createdAt: now, updatedAt: now
     });
     const r = upsert(data.items, rec);
@@ -445,7 +446,7 @@ function applyParsed(data, parsed, opts, by) {
     const iid = idByItem.get(m.item);
     const rec = core.cleanMoveRecord({
       id: 'imp-' + hash(`mv|${parsed.kind}|${m.rowNo}|${m.dir}|${m.date}|${norm(m.itemName)}|${m.qty}`),
-      itemId: iid, dir: m.dir, qty: m.qty, date: m.date, reason: m.reason, party: m.party, ref: m.ref, remarks: m.remarks,
+      itemId: iid, dir: m.dir, qty: m.qty, date: m.date, reason: m.reason, party: m.party, ref: m.ref, remarks: m.remarks, price: m.price,
       by: m.by || by, src, createdAt: now, updatedAt: now
     });
     if (upsert(data.movements, rec) === 'added') res.movementsAdded++;
