@@ -10,6 +10,7 @@ const { pathToFileURL } = require('url');
 const { dialog, shell, BrowserWindow, app: electronApp } = require('electron');
 const core = require('./inventory-core');
 const imp = require('./inventory-import');
+const zip = require('./zip-lite');
 
 const MAX_BACKUPS = 30;
 
@@ -563,6 +564,111 @@ function registerInventory(ipcMain, ctx) {
     migratePhotos(d);
     save();
     return { ok: true, report, from: raw.from || '', exportedAt: raw.exportedAt || '', state: state() };
+  });
+
+  // ---------- back up everything (data + pictures in one zip) and restore ----------
+  // Each backup is a NEW file (the date is in its name). Restoring needs the admin PIN and keeps a safety copy of what was there.
+  const lastBackupFile = () => path.join(dir(), 'last-full-backup.json');
+  const photoFiles = () => { try { return fs.readdirSync(photosDir()).filter(n => core.PHOTO_NAME.test(n)); } catch (e) { return []; } };
+  const imageOk = (b) => b.length > 12 && ((b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) || (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) || (b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP'));
+  const liveCounts = (d) => ({ items: d.items.filter(i => !i.deleted).length, movements: d.movements.filter(m => !m.deleted).length, loans: d.loans.filter(l => !l.deleted).length });
+
+  handle('inv-backup-info', () => {
+    const d = load();
+    const files = photoFiles();
+    let photoBytes = 0;
+    files.forEach(n => { try { photoBytes += fs.statSync(path.join(photosDir(), n)).size; } catch (e) {} });
+    let dataBytes = 0; try { dataBytes = fs.statSync(file()).size; } catch (e) {}
+    let last = null; try { last = JSON.parse(fs.readFileSync(lastBackupFile(), 'utf8')); } catch (e) {}
+    return Object.assign({ ok: true, photos: files.length, photoBytes, dataBytes, last, today: core.todayISO() }, liveCounts(d));
+  });
+
+  handle('inv-backup-all', async () => {
+    const d = load();
+    const r = await dialog.showSaveDialog(ctx.getWindow(), {
+      title: 'Save the full backup (data and pictures)',
+      defaultPath: `WorkHelper-backup-${pcName()}-${core.todayISO()}.zip`,
+      filters: [{ name: 'Backup (zip)', extensions: ['zip'] }]
+    });
+    if (r.canceled || !r.filePath) return { canceled: true };
+    const files = photoFiles();
+    const counts = liveCounts(d);
+    const manifest = { app: 'work-helper-inventory-backup', version: 1, createdAt: new Date().toISOString(), from: pcName(), ...counts, photos: files.length };
+    const entries = [
+      { name: 'manifest.json', data: Buffer.from(JSON.stringify(manifest, null, 1)) },
+      { name: 'inventory.json', data: Buffer.from(JSON.stringify(d)) }
+    ].concat(files.map(n => ({ name: 'photos/' + n, file: path.join(photosDir(), n) })));
+    const tmpFile = r.filePath + '.tmp';
+    try {
+      const info = zip.createZip(tmpFile, entries);
+      fs.renameSync(tmpFile, r.filePath);
+      try { fs.writeFileSync(lastBackupFile(), JSON.stringify({ at: new Date().toISOString(), path: r.filePath, bytes: info.bytes })); } catch (e) {}
+      audit('Full backup saved', r.filePath);
+      return { ok: true, path: r.filePath, bytes: info.bytes, photos: files.length, ...counts };
+    } catch (err) {
+      try { fs.unlinkSync(tmpFile); } catch (e) {}
+      return { ok: false, error: 'Could not save the backup (is the disk full or the file open?): ' + err.message };
+    }
+  });
+
+  let pendingRestore = null;
+  function readBackup(zpath) {
+    const z = zip.openZip(zpath);
+    try {
+      let manifest;
+      try { manifest = JSON.parse(z.read('manifest.json', 1e6).toString('utf8')); } catch (e) { throw new Error('This is not a Work Helper backup file.'); }
+      if (!manifest || manifest.app !== 'work-helper-inventory-backup') throw new Error('This is not a Work Helper backup file.');
+      const incoming = core.normalizeData(JSON.parse(z.read('inventory.json', 800 * 1024 * 1024).toString('utf8')));
+      const photos = z.names.filter(n => n.startsWith('photos/') && core.PHOTO_NAME.test(n.slice(7)));
+      return { z, manifest, incoming, photos };
+    } catch (e) { z.close(); throw e; }
+  }
+  handle('inv-restore-pick', async () => {
+    const r = await dialog.showOpenDialog(ctx.getWindow(), {
+      title: 'Choose a Work Helper backup',
+      filters: [{ name: 'Backup (zip)', extensions: ['zip'] }],
+      properties: ['openFile']
+    });
+    if (r.canceled || !r.filePaths.length) return { canceled: true };
+    let b;
+    try { b = readBackup(r.filePaths[0]); } catch (e) { return { ok: false, error: e.message }; }
+    b.z.close();
+    pendingRestore = r.filePaths[0];
+    return { ok: true, fileName: path.basename(r.filePaths[0]), createdAt: b.manifest.createdAt || '', from: b.manifest.from || '', backup: Object.assign(liveCounts(b.incoming), { photos: b.photos.length }), current: Object.assign(liveCounts(load()), { photos: photoFiles().length }) };
+  });
+  handle('inv-restore-apply', (e, pin) => {
+    if (!pendingRestore) return { ok: false, error: 'Please choose the backup file again.' };
+    const g = needPin(pin, 'Restore everything from ' + path.basename(pendingRestore));
+    if (g) return g;
+    let b;
+    try { b = readBackup(pendingRestore); } catch (err) { return { ok: false, error: err.message }; }
+    try {
+      // 1. a safety copy of what is here now
+      fs.mkdirSync(backupDir(), { recursive: true });
+      const safety = path.join(backupDir(), `inventory-before-restore-${stamp()}.json`);
+      fs.writeFileSync(safety, JSON.stringify(load()));
+      // 2. pictures that are not here yet (a picture's name is made from its content, so an existing name is the same picture)
+      fs.mkdirSync(photosDir(), { recursive: true });
+      let added = 0, bad = 0;
+      for (const n of b.photos) {
+        const dest = path.join(photosDir(), n.slice(7));
+        if (fs.existsSync(dest)) continue;
+        try {
+          const buf = b.z.read(n, 8 * 1024 * 1024);
+          if (!imageOk(buf)) { bad++; continue; }
+          fs.writeFileSync(dest + '.tmp', buf); fs.renameSync(dest + '.tmp', dest); added++;
+        } catch (err) { bad++; }
+      }
+      // 3. the data
+      data = b.incoming;
+      migratePhotos(data);
+      save();
+      pendingRestore = null;
+      audit('Restored from a backup', `${path.basename(b.manifest.from || '')} ${b.manifest.createdAt || ''}; ${added} pictures added`);
+      return { ok: true, restored: Object.assign(liveCounts(data), { photosAdded: added, photosBad: bad }), safety, state: state() };
+    } catch (err) {
+      return { ok: false, error: 'Could not restore: ' + err.message };
+    } finally { b.z.close(); }
   });
 
   // ---------- Excel: writing ----------

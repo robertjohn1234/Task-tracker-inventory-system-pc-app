@@ -1644,6 +1644,65 @@
     d.button('Close', '', d.close);
   }
 
+  // ---------- back up everything / restore ----------
+  function openBackup() {
+    const d = dialog('Back up / restore everything', { wide: true });
+    const c = d.content;
+    c.append(E('p', '', 'A full backup is ONE zip file with your inventory (items, stock movements, tools, loans, repairs, records) and all pictures. Keep it on a USB stick or another drive.'));
+    c.append(E('p', 'invNote', 'Every backup is a new file with the date in its name. An older backup is never overwritten unless you pick the same file name yourself and confirm. The automatic daily safety copies keep running as before (they hold the data only, not the pictures).'));
+    const info = E('div', 'invList'); info.style.maxHeight = '140px'; c.append(info);
+    const out = E('div', 'invList'); out.style.maxHeight = '240px'; out.hidden = true; c.append(out);
+    const mb = (b) => b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB';
+    async function refresh() {
+      const r = await api.invBackupInfo();
+      info.innerHTML = '';
+      if (!r || !r.ok) { info.append(E('div', 'invWarn', (r && r.error) || 'Could not read the backup information.')); return; }
+      info.append(E('div', '', `Now on this PC: ${r.items} items, ${r.movements} stock movements, ${r.loans} loans, ${r.photos} pictures.`));
+      info.append(E('div', 'invNote', `A full backup would be about ${mb(r.dataBytes + r.photoBytes)} (pictures ${mb(r.photoBytes)}).`));
+      info.append(E('div', r.last ? 'invNote' : 'invWarn', r.last ? `Last full backup: ${String(r.last.at).slice(0, 10)} — ${r.last.path}` : 'No full backup has been made on this PC yet.'));
+    }
+    refresh();
+    d.button('Back up everything…', 'primary', async () => {
+      const r = await api.invBackupAll();
+      if (r.canceled) return;
+      if (!r.ok) { d.say(r.error, true); return; }
+      d.say('');
+      out.hidden = false; out.innerHTML = '';
+      out.append(E('div', 'invOk', 'Backup saved:'), E('div', '', r.path), E('div', 'invNote', `${r.items} items, ${r.movements} movements, ${r.loans} loans, ${r.photos} pictures (${mb(r.bytes)}).`));
+      refresh();
+    });
+    d.button('Restore from a backup…', '', async () => {
+      const r = await api.invRestorePick();
+      if (r.canceled) return;
+      if (!r.ok) { d.say(r.error, true); return; }
+      d.say('');
+      out.hidden = false; out.innerHTML = '';
+      out.append(E('div', 'invOk', 'Nothing is changed yet. Backup file: ' + r.fileName + (r.createdAt ? ' (made ' + String(r.createdAt).slice(0, 10) + (r.from ? ' on ' + r.from : '') + ')' : '')));
+      out.append(E('div', '', `The backup has: ${r.backup.items} items, ${r.backup.movements} movements, ${r.backup.loans} loans, ${r.backup.photos} pictures.`));
+      out.append(E('div', '', `This PC has now: ${r.current.items} items, ${r.current.movements} movements, ${r.current.loans} loans, ${r.current.photos} pictures.`));
+      out.append(E('div', 'invWarn', '⚠ Restoring REPLACES the inventory on this PC with the backup. Anything entered after the backup was made is lost from the screen. A safety copy of what is here now is saved first (More → Open data and backups folder). Your admin PIN is not changed.'));
+      const row = E('div', 'invRow');
+      const go = E('button', 'primary', 'Restore (admin PIN needed)'); go.type = 'button';
+      const no = E('button', '', 'Do not restore'); no.type = 'button';
+      row.append(go, no); out.append(row);
+      no.addEventListener('click', () => { out.hidden = true; out.innerHTML = ''; });
+      go.addEventListener('click', async () => {
+        go.disabled = true;
+        const a = await withPin((pin) => api.invRestoreApply(pin), 'Restore everything from a backup');
+        go.disabled = false;
+        if (a.canceled) return;
+        if (!a.ok) { d.say(a.error, true); return; }
+        useState(a); d.say('');
+        out.innerHTML = '';
+        out.append(E('div', 'invOk', 'Restored.'), E('div', '', `${a.restored.items} items, ${a.restored.movements} movements, ${a.restored.loans} loans; ${a.restored.photosAdded} pictures added.`));
+        if (a.restored.photosBad) out.append(E('div', 'invWarn', `${a.restored.photosBad} picture file${a.restored.photosBad === 1 ? '' : 's'} in the backup could not be used and were skipped.`));
+        out.append(E('div', 'invNote', 'Safety copy of the previous data: ' + a.safety));
+        refresh();
+      });
+    });
+    d.button('Close', '', d.close);
+  }
+
   // ---------- buttons and top bar wiring ----------
   // ---------- minimum levels for many items at once ----------
   function openMinLevels() {
@@ -1724,6 +1783,7 @@
       { label: 'Export to Excel…', run: exportExcel },
       '-',
       { label: 'Send / receive file for the other PC…', run: openSync },
+      { label: 'Back up / restore everything (with pictures)…', run: openBackup },
       '-',
       { label: 'Form heading (company, department)…', run: openFormHeading },
       { label: 'Minimum levels (low-stock limits)…', run: openMinLevels },
@@ -1755,7 +1815,7 @@
     E, say, esc, fmtQty, fmtDate, daysBetween, addDays, lc, LIMIT,
     dialog, fld, inp, sel, grid, datalist, itemInput, resolveItem,
     load, useState, askPin, setPinDialog, withPin, photoSrc: (v) => !v ? '' : /^data:/.test(v) ? v : (window.PhotoBase || '') + v,
-    openMove, openImport, exportExcel, openSync, openFormHeading, makeForm,
+    openMove, openImport, exportExcel, openSync, openBackup, openFormHeading, makeForm,
     buildReport, reportDoc, rpTable, outputReport, deleteMove,
     askName
   };

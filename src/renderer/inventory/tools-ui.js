@@ -1241,6 +1241,7 @@
       { label: 'Export to Excel…', run: () => K.exportExcel() },
       '-',
       { label: 'Send / receive file for the other PC…', run: () => K.openSync() },
+      { label: 'Back up / restore everything (with pictures)…', run: () => K.openBackup() },
       '-',
       { label: 'Form heading (company, department)…', run: () => K.openFormHeading() },
       { label: 'Open data and backups folder', run: () => api.invOpenFolder() },

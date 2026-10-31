@@ -121,3 +121,12 @@ merge keeps the newest `updatedAt` per record.
   Step 2 (`inv-sync-apply`) needs the admin PIN, makes a backup, then merges. The same preview cannot be applied twice.
 - **Excel import** (`inv-import-apply`) also needs the PIN.
 - Prices travel in the app's own Excel export / import (Stock: Price, Value; Movements: Price / unit; Tools register). Bulk entry has a "Unit price" column for IN lines.
+
+## Back up everything / Restore (update 13)
+
+- `src/main/inventory/zip-lite.js`: a tiny zip writer/reader in plain Node (no packages). `createZip(path, entries)`, `openZip(path)` (checks CRC and sizes, refuses non-zip and damaged files, `read(name, maxBytes)` stops at a size limit).
+- `inventory.js` handlers: `inv-backup-info` (counts, size, last full backup), `inv-backup-all` (save dialog, writes `<name>.tmp` then renames, so a failed write never leaves a half file), `inv-restore-pick` (opens the zip, only previews), `inv-restore-apply(pin)`.
+- Zip content: `manifest.json` (app marker, date, PC name, counts), `inventory.json`, `photos/ph-<hex>.<ext>`. The PIN file, markers and audit log are NOT in a backup.
+- Restore: admin PIN (`needPin`), then a safety copy `backups/inventory-before-restore-<stamp>.json`, then missing pictures are written (only names matching `PHOTO_NAME` and whose bytes look like jpg/png/webp), then the data is replaced and saved. The current PIN is kept. One pick = one restore.
+- UI: `InvKit.openBackup()` (More > "Back up / restore everything (with pictures)…" in both Consumables and Tools).
+- Not done on purpose: "keep last N backups" (backups are only ever added by the user), encryption.

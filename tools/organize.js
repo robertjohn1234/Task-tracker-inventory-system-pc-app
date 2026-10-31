@@ -28,7 +28,7 @@ const MAP = {
   'scanner.js': `${MAIN}/files`, 'extractor.js': `${MAIN}/files`, 'extractPool.js': `${MAIN}/files`, 'extractWorker.js': `${MAIN}/files`,
   'summarizer.js': `${MAIN}/files`, 'categories.js': `${MAIN}/files`, 'organizer.js': `${MAIN}/files`, 'fileops.js': `${MAIN}/files`, 'previews.js': `${MAIN}/files`,
   'tasks.js': `${MAIN}/tasks`,
-  'inventory.js': `${MAIN}/inventory`, 'inventory-core.js': `${MAIN}/inventory`, 'inventory-import.js': `${MAIN}/inventory`,
+  'inventory.js': `${MAIN}/inventory`, 'inventory-core.js': `${MAIN}/inventory`, 'inventory-import.js': `${MAIN}/inventory`, 'zip-lite.js': `${MAIN}/inventory`,
   'notepad.js': `${MAIN}/notes`,
   'punch.js': `${MAIN}/punch`,
   'aiswitch.js': `${MAIN}/ai`,
